@@ -21,7 +21,7 @@ for split in ["train", "validation", "test"]:
     agg_df["hasBiasedImplication"] = (agg_df["targetStereotype"].apply(len) == 0).astype(int)
     
     agg_df['targetMinority'] = agg_df['targetMinority'].apply(lambda c: dict(Counter(c)))
-    agg_df['targetMinority'] = agg_df['targetMinority'].apply(lambda c: {k: round(v / total,2) for total in (sum(c.values(), 0.0),) for k, v in c.items()})
+    # agg_df['targetMinority'] = agg_df['targetMinority'].apply(lambda c: {k: round(v / total,2) for total in (sum(c.values(), 0.0),) for k, v in c.items()})
 
     agg_df.to_pickle(os.path.join(os.getcwd(), data_folder, aggregate_folder, f"{split}.pkl"))
 
