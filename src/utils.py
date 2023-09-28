@@ -14,7 +14,7 @@ def raw_data_cleaner(splits):
     for split in splits:
         df = pd.read_csv(f"data/old_raw/{split}.csv")
         textFields = ['targetMinority','targetCategory', 'targetStereotype']
-        classFields = ['whoTarget', 'intentYN', 'sexYN','offensiveYN']
+        classFields = ['whoTarget', 'intentYN', 'sexYN','offensiveYN', "speakerMinorityYN"]
         df = df.drop(columns=["sexReason", "annotatorGender", "annotatorMinority", "sexPhrase", "WorkerId", "HITId", "annotatorPolitics", "annotatorRace", "annotatorAge"])
         df[textFields] = df[textFields].fillna("")
         for field in classFields:

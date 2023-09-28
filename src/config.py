@@ -25,11 +25,28 @@ class Config:
     class TrainParameters():
         models:str = "gpt2"
         epochs:int = 3
-        batch_size:int = 4
+        batch_size:int = 2
+        lr:int = 1e-5
         max_sequence_length:int = 800
         device:str = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+        special_tokens = {
+            'pad_token': '[PAD]',
+            'sep_token': '[SEP]',
+            "additional_special_tokens": ["[offY]", "[offN]", "[sexY]", "[sexN]", "[intY]", 
+                                        "[intN]", "[grpY]", "[grpN]", "[ingrpN]", "[ingrpY]"]
+        }  
+
+    class Utils():
+        class_label_encoder = {
+            0: {0: "[grpN]", 1: "[grpY]"},
+            1: {0: "[intN]", 1: "[intY]"},
+            2: {0: "[sexN]", 1: "[sexY]"},
+            3: {0: "[offN]", 1: "[offY]"},
+            4: {0: "[ingrpN]", 1: "[ingrpY]"},
+        }
         
     dataset: Dataset = Dataset()
     train_params: TrainParameters = TrainParameters()
+    utils: Utils = Utils()
     seed:int = 42
