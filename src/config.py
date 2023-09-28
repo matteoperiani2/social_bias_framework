@@ -31,6 +31,8 @@ class Config:
         device:str = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         special_tokens = {
+            'bos_token': "[STR]",
+            "eos_token": "[END]",
             'pad_token': '[PAD]',
             'sep_token': '[SEP]',
             "additional_special_tokens": ["[offY]", "[offN]", "[sexY]", "[sexN]", "[intY]", 
@@ -38,7 +40,7 @@ class Config:
         }  
 
     class Utils():
-        class_label_encoder = {
+        label_encoder = {
             0: {0: "[grpN]", 1: "[grpY]"},
             1: {0: "[intN]", 1: "[intY]"},
             2: {0: "[sexN]", 1: "[sexY]"},
