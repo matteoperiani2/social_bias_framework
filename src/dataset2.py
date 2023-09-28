@@ -24,28 +24,24 @@ class SBICDataset(Dataset):
         post = row[5]
 
         # classification features
-        class_features= row[:5]
+        off= row[3]
 
         # generative features
         mionority = row[6]
         stereotype = row[8]
 
-        input_str = self.tokenizer.bos_token + post + self.tokenizer.sep_token # [STR] post [SEP]
-
-        class_features_enc = [self.labels_encoder[idx][val] for idx,val in enumerate(class_features)]
-        label_str = "".join(class_features_enc[:4]) + self.tokenizer.sep_token  # grpY/N intY/N ... ingrpY/N (5 class) 
-        label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  #[SEP] minority [SEP] stereotype [SEP]
-        label_str += class_features_enc[-1] + self.tokenizer.eos_token
+        input_str = post
 
         # input encoding
         inputs = self.tokenizer(
-           input_str, truncation=True, padding="max_length", max_length=self.max_length,
+           input_str+self.tokenizer.sep_token, truncation=True, padding="max_length", max_length=self.max_length,
+        )
+
+        labels = self.tokenizer(
+            "[offY][intN]", truncation=True, padding="max_length", max_length=self.max_length,
         )
 
         #output encoding
-        labels = self.tokenizer(
-            label_str, truncation=True, padding="max_length", max_length=self.max_length
-        )
         labels = [-100 if token == self.tokenizer.pad_token_id else token for token in labels["input_ids"]]
 
         return {
