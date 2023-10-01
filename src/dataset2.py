@@ -21,7 +21,8 @@ class SBICDataset(Dataset):
 
     def __getitem__(self, idx):
         row  = self.data[idx]
-        post = row[5]
+        # post = row[5]
+        post = "Stupid fucking nigger LeBron. You flopping stupid jungle bunny monkey faggot."
 
         # classification features
         off= row[3]
@@ -34,11 +35,11 @@ class SBICDataset(Dataset):
 
         # input encoding
         inputs = self.tokenizer(
-           input_str+self.tokenizer.sep_token, truncation=True, padding="max_length", max_length=self.max_length,
+           post+"[SEP][offY][intN][sexN][ingrpY]<|endoftext|>", truncation=True, padding="max_length", max_length=self.max_length,
         )
 
         labels = self.tokenizer(
-            "[offY][intN]", truncation=True, padding="max_length", max_length=self.max_length,
+            "[SEP][offY][intN][sexN][ingrpY]<|endoftext|>", truncation=True, padding="max_length", max_length=self.max_length,
         )
 
         #output encoding

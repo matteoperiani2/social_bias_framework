@@ -23,7 +23,7 @@ class Config:
         test_data_agg: str = os.path.join(aggregated_dir, "test.pkl")
 
     class TrainParameters():
-        models:str = "gpt2"
+        models:str = "distilgpt2"
         epochs:int = 3
         batch_size:int = 2
         lr:int = 1e-5
@@ -31,13 +31,13 @@ class Config:
         device:str = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         special_tokens = {
-            'bos_token': "[STR]",
-            "eos_token": "[END]",
-            'pad_token': '[PAD]',
+            "eos_token": "<|endoftext|>",
+            'pad_token': '<|pad|>',
+            "bos_token": "[BOS]",
             'sep_token': '[SEP]',
             "additional_special_tokens": ["[offY]", "[offN]", "[sexY]", "[sexN]", "[intY]", 
                                         "[intN]", "[grpY]", "[grpN]", "[ingrpN]", "[ingrpY]"]
-        }  
+        }
 
     class Utils():
         label_encoder = {
