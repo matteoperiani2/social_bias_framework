@@ -1,14 +1,55 @@
 from typing import List
+import random
 import numpy as np
 import pandas as pd
 from collections import Counter, defaultdict
 import os
 import torch
 from transformers import AutoTokenizer, AutoModel
+from torch.utils.data import DataLoader
 
 from .config import Config
 
 CONFIG: Config = Config()
+
+class PropertyDict(dict):
+    def __getattr__(self, key):
+        if key in self:
+            return self[key]
+        raise AttributeError(
+            f"'{self.__class__.__name__}' object has no attribute '{key}'"
+        )
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+class DummyScheduler:
+    def __init__(self, optimizer: torch.optim.Optimizer) -> None:
+        self.optimizer = optimizer
+
+    def step(self):
+        None
+
+    def get_last_lr(self):
+        return [group["lr"] for group in self.optimizer.param_groups]
+
+    def state_dict(self):
+        return {}
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def create_reproducible_dataloader(*args, **kwargs):
+    generator = torch.Generator()
+    return DataLoader(
+        *args,
+        **kwargs,
+        #   worker_init_fn=seed_worker,
+        #   generator=generator
+    )
 
 def raw_data_cleaner(splits):
     for split in splits:

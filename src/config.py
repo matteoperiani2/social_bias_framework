@@ -3,7 +3,7 @@ import torch
 
 class Config:
     
-    class Dataset():
+    class Dataset:
         
         data_dir: str = "data"
         
@@ -22,8 +22,7 @@ class Config:
         val_data_agg: str = os.path.join(aggregated_dir, "validation.pkl")
         test_data_agg: str = os.path.join(aggregated_dir, "test.pkl")
 
-    class TrainParameters():
-        models:str = "distilgpt2"
+    class TrainParameters:
         epochs:int = 3
         batch_size:int = 2
         lr:int = 1e-5
@@ -31,24 +30,47 @@ class Config:
         device:str = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         special_tokens = {
-            "eos_token": "<|endoftext|>",
-            'pad_token': '<|pad|>',
-            "bos_token": "[BOS]",
-            'sep_token': '[SEP]',
-            "additional_special_tokens": ["[offY]", "[offN]", "[sexY]", "[sexN]", "[intY]", 
-                                        "[intN]", "[grpY]", "[grpN]", "[ingrpN]", "[ingrpY]"]
+            "pad_token": "<|pad|>",
+            "sep_token": "<|sep|>",
+            "additional_special_tokens": [
+                "<|offY|>",
+                "<|offN|>",
+                "<|sexY|>",
+                "<|sexN|>",
+                "<|intY|>",
+                "<|intN|>",
+                "<|grpY|>",
+                "<|grpN|>",
+                "<|ingrpN|>",
+                "<|ingrpY|>",
+            ],
         }
 
-    class Utils():
+    class Utils:
         label_encoder = {
-            0: {0: "[grpN]", 1: "[grpY]"},
-            1: {0: "[intN]", 1: "[intY]"},
-            2: {0: "[sexN]", 1: "[sexY]"},
-            3: {0: "[offN]", 1: "[offY]"},
-            4: {0: "[ingrpN]", 1: "[ingrpY]"},
+            0: {0: "<|grpN|>", 1: "<|grpY|>"},
+            1: {0: "<|intN|>", 1: "<|intY|>"},
+            2: {0: "<|sexN|>", 1: "<|sexY|>"},
+            3: {0: "<|offN|>", 1: "<|offY|>"},
+            4: {0: "<|ingrpN|>", 1: "<|ingrpY|>"},
         }
+
+    class Checkpoints:
+        def __init__(
+            self, gpt2="gpt2", distilgpt2="distilgpt2"
+        ) -> None:
+            self.gpt2 = gpt2
+            self.distilgpt2 = distilgpt2
+
+    class WandbConfig:
+        """Specify the parameters of `wandb.init`"""
+
+        project: str = "matteo-periani"
+        entity: str = "matteo-periani"
         
     dataset: Dataset = Dataset()
     train_params: TrainParameters = TrainParameters()
+    checkpoints: Checkpoints = Checkpoints()
     utils: Utils = Utils()
+    wandbConfig:WandbConfig = WandbConfig()
     seed:int = 42
