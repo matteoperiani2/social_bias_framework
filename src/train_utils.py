@@ -13,7 +13,7 @@ from accelerate import Accelerator
 
 from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
-from .dataset import SBICDataset,SBICDataCollator
+from .dataset import SBICDataCollator
 
 CONFIG: Config = Config()
 
@@ -28,7 +28,6 @@ def make(config):
     val_dataloader = make_dataloader(val_data, tokenizer, config, split="validation")
 
     # Make the loss, the optimizer and the scheduler
-    # loss_fn = make_loss(config)
     optimizer = make_optimizer(model, config)
     scheduler = make_scheduler(
         optimizer, steps_per_epoch=len(train_dataloader), config=config
@@ -392,15 +391,15 @@ def train_batch(
 # #     )
 
 
-# # def evaluate(model, tokenizer, train_data: datasets.Dataset, val_data: datasets.Dataset, test_data: datasets.Dataset, config):
-# #     datasets = [("train", train_data), ("val", val_data), ("test", test_data)]
-# #     results = {}
-# #     for dataset_name, dataset in datasets:
-# #         print(f"eval  {dataset_name}")
-# #         outputs, metrics = evaluate_model(model, tokenizer, dataset, config)
-# #         results[dataset_name] = (outputs, metrics)
+# def evaluate(model, tokenizer, train_data: SBICDataset, val_data: SBICDataset, test_data: SBICDataset, config):
+#     datasets = [("train", train_data), ("val", val_data), ("test", test_data)]
+#     results = {}
+#     for dataset_name, dataset in datasets:
+#         print(f"eval  {dataset_name}")
+#         outputs, metrics = eval_classification_token(model, tokenizer, dataset, config)
+#         results[dataset_name] = (outputs, metrics)
 
-# #         gc.collect()
-# #         torch.cuda.empty_cache()
+#         gc.collect()
+#         torch.cuda.empty_cache()
 
-# #     return results
+#     return results

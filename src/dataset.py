@@ -60,6 +60,59 @@ class SBICDataset(Dataset):
             "attention_mask": inputs["attention_mask"],
             "labels": labels["input_ids"],
         }
+    
+
+class SBICDatasetInference(Dataset):
+     
+    def __init__(self, data, tokenizer, max_sequence_length=None):
+        super(SBICDataset).__init__()
+        self.data = data #numpy array
+        self.tokenizer = tokenizer
+        self.labels_encoder = CONFIG.utils.label_encoder
+        self.max_length = max_sequence_length if max_sequence_length is not None else tokenizer.model_max_length
+        
+
+    def __len__(self):
+        return self.data.shape[0]
+
+    def __getitem__(self, idx):
+        row  = self.data[idx]
+        post = row[5]
+
+        # classification features
+        class_features= row[:5]
+
+        # generative features
+        mionority = row[6]
+        stereotype = row[8]
+
+        input_str = post + self.tokenizer.sep_token # post [SEP]
+
+        class_features_enc = [self.labels_encoder[idx][val] for idx,val in enumerate(class_features)]
+        label_str = "".join(class_features_enc[:4]) + self.tokenizer.sep_token # [SEP] grpY/N intY/N ... ingrpY/N (5 class) 
+        label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  #[SEP] minority [SEP] stereotype [SEP]
+        label_str += class_features_enc[-1] + self.tokenizer.eos_token # [SEP] ingrpY/N [EOS]
+        
+
+        # input encoding
+        inputs = self.tokenizer(
+            text=input_str,
+            truncation="only_first",
+            max_length=self.max_length,
+        )
+
+        # output encoding
+        labels = self.tokenizer(
+            label_str,
+            truncation=False,
+            max_length=self.max_length,
+        )
+
+        return {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "labels": labels["input_ids"],
+        }
 
 
 class SBICDataCollator(transformers.DataCollatorForSeq2Seq):
@@ -113,7 +166,6 @@ class SBICDataCollator(transformers.DataCollatorForSeq2Seq):
         # same length to return tensors.
 
         if max_ids_len is not None:
-
             padding_side = self.tokenizer.padding_side
             for feature in features:
                 remainder = [self.label_pad_token_id] * (max_ids_len - len(feature["labels"]))
