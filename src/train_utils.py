@@ -96,7 +96,7 @@ def make_dataloader(dataset, model, tokenizer, config, split: str):
         if split != "train" and "val_num_workers" in config
         else config.num_workers,
         pin_memory=True,
-        shuffle=True,
+        shuffle=split == "train",
     )
     return dataloader
 

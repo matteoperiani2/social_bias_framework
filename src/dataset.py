@@ -1,6 +1,5 @@
 import numpy as np
 from typing import Any, Optional, Union
-import torch
 from torch.utils.data import Dataset
 import transformers 
 
@@ -10,13 +9,13 @@ CONFIG: Config = Config()
 
 class SBICDataset(Dataset):
      
-    def __init__(self, data, tokenizer, max_sequence_length=None):
+    def __init__(self, data, tokenizer, is_training=True, max_sequence_length=None):
         super(SBICDataset).__init__()
         self.data = data #numpy array
         self.tokenizer = tokenizer
         self.labels_encoder = CONFIG.utils.label_encoder
         self.max_length = max_sequence_length if max_sequence_length is not None else tokenizer.model_max_length
-        
+        self.is_training = is_training
 
     def __len__(self):
         return self.data.shape[0]
@@ -39,67 +38,20 @@ class SBICDataset(Dataset):
         label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  #[SEP] minority [SEP] stereotype [SEP]
         label_str += class_features_enc[-1] + self.tokenizer.eos_token # [SEP] ingrpY/N [EOS]
         
-
-        # input encoding
-        inputs = self.tokenizer(
-            text=input_str,
-            text_pair=label_str,
-            truncation="only_first",
-            max_length=self.max_length,
-        )
-
-        # output encoding
-        labels = self.tokenizer(
-            label_str,
-            truncation=False,
-            max_length=self.max_length,
-        )
-
-        return {
-            "input_ids": inputs["input_ids"],
-            "attention_mask": inputs["attention_mask"],
-            "labels": labels["input_ids"],
-        }
-    
-
-class SBICDatasetInference(Dataset):
-     
-    def __init__(self, data, tokenizer, max_sequence_length=None):
-        super(SBICDataset).__init__()
-        self.data = data #numpy array
-        self.tokenizer = tokenizer
-        self.labels_encoder = CONFIG.utils.label_encoder
-        self.max_length = max_sequence_length if max_sequence_length is not None else tokenizer.model_max_length
-        
-
-    def __len__(self):
-        return self.data.shape[0]
-
-    def __getitem__(self, idx):
-        row  = self.data[idx]
-        post = row[5]
-
-        # classification features
-        class_features= row[:5]
-
-        # generative features
-        mionority = row[6]
-        stereotype = row[8]
-
-        input_str = post + self.tokenizer.sep_token # post [SEP]
-
-        class_features_enc = [self.labels_encoder[idx][val] for idx,val in enumerate(class_features)]
-        label_str = "".join(class_features_enc[:4]) + self.tokenizer.sep_token # [SEP] grpY/N intY/N ... ingrpY/N (5 class) 
-        label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  #[SEP] minority [SEP] stereotype [SEP]
-        label_str += class_features_enc[-1] + self.tokenizer.eos_token # [SEP] ingrpY/N [EOS]
-        
-
-        # input encoding
-        inputs = self.tokenizer(
-            text=input_str,
-            truncation="only_first",
-            max_length=self.max_length,
-        )
+        if self.is_training:
+            # input encoding
+            inputs = self.tokenizer(
+                text=input_str,
+                text_pair=label_str,
+                truncation="only_first",
+                max_length=self.max_length,
+            )
+        else:
+            inputs = self.tokenizer(
+                text=input_str,
+                truncation="only_first",
+                max_length=self.max_length,
+            )
 
         # output encoding
         labels = self.tokenizer(

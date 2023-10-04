@@ -8,9 +8,9 @@ class Config:
         data_dir: str = "data"
         
         raw_dir: str = os.path.join(data_dir, "raw")
-        train_data_raw: str = os.path.join(raw_dir, "train.pkl")
-        val_data_raw: str = os.path.join(raw_dir, "validation.pkl")
-        test_data_raw: str = os.path.join(raw_dir, "test.pkl")
+        train_data_raw: str = os.path.join(raw_dir, "train.csv")
+        val_data_raw: str = os.path.join(raw_dir, "validation.csv")
+        test_data_raw: str = os.path.join(raw_dir, "test.csv")
 
         preproc_dir: str = os.path.join(data_dir, "preproc")
         train_data_preproc: str = os.path.join(preproc_dir, "train.pkl")
@@ -23,10 +23,12 @@ class Config:
         test_data_agg: str = os.path.join(aggregated_dir, "test.pkl")
 
     class TrainParameters:
+        model_name:str = "distilgpt2"
+        checkpoint_name:str = "distilgpt2"
         epochs:int = 3
         batch_size:int = 2
         lr:int = 1e-5
-        max_sequence_length:int = 800
+        padding_side:str = "left"
         device:str = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         special_tokens = {
@@ -74,3 +76,6 @@ class Config:
     utils: Utils = Utils()
     wandbConfig:WandbConfig = WandbConfig()
     seed:int = 42
+
+
+CONFIG:Config = Config()

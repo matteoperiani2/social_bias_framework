@@ -51,18 +51,6 @@ def create_reproducible_dataloader(*args, **kwargs):
         #   generator=generator
     )
 
-def raw_data_cleaner(splits):
-    for split in splits:
-        df = pd.read_csv(f"data/old_raw/{split}.csv")
-        textFields = ['targetMinority','targetCategory', 'targetStereotype']
-        classFields = ['whoTarget', 'intentYN', 'sexYN','offensiveYN', "speakerMinorityYN"]
-        df = df.drop(columns=["sexReason", "annotatorGender", "annotatorMinority", "sexPhrase", "WorkerId", "HITId", "annotatorPolitics", "annotatorRace", "annotatorAge"])
-        df[textFields] = df[textFields].fillna("")
-        for field in classFields:
-            df[field] = df[field].apply(lambda c: float(c>=0.5))
-        df["speakerMinorityYN"] = df["speakerMinorityYN"].fillna(0)
-        df.to_pickle(os.path.join(CONFIG.dataset.raw_dir, f"{split}.pkl"))
-
 def data_aggregator(splits:List):
     textFields = ['targetMinority','targetCategory', 'targetStereotype']
     classFields = ['whoTarget', 'intentYN', 'sexYN','offensiveYN']
