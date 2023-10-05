@@ -50,11 +50,11 @@ class Config:
 
     class Utils:
         label_encoder = {
-            0: {0: "<|grpN|>", 1: "<|grpY|>"},
+            0: {0: "<|offN|>", 1: "<|offY|>"},
             1: {0: "<|intN|>", 1: "<|intY|>"},
             2: {0: "<|sexN|>", 1: "<|sexY|>"},
-            3: {0: "<|offN|>", 1: "<|offY|>"},
-            4: {0: "<|ingrpN|>", 1: "<|ingrpY|>"},
+            3: {0: "<|grpN|>", 1: "<|grpY|>", 2:"<|pad|>"},    
+            4: {0: "<|ingrpN|>", 1: "<|ingrpY|>", 2:"<|pad|>"},
         }
 
     class Checkpoints:

@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 import wandb
 from transformers import GPT2LMHeadModel, AutoTokenizer, get_scheduler
-from accelerate import Accelerator
+# from accelerate import Accelerator
 
 from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
