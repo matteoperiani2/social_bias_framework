@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 import wandb
 from transformers import GPT2LMHeadModel, AutoTokenizer, get_scheduler
-# from accelerate import Accelerator
+from accelerate import Accelerator
 
 from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
@@ -50,8 +50,8 @@ def make(config):
     )
 
 def make_tokinzer(config:dict):
-    checkpoint = CONFIG.checkpoints.__dict__[config.checkpoint_name]
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint,
+    # checkpoint = CONFIG.checkpoints.__dict__[config.checkpoint_name]
+    tokenizer = AutoTokenizer.from_pretrained("distilgpt2",
                                               padding_side=config.padding_side,
                                               use_fast=True)
     tokenizer.add_special_tokens(CONFIG.train_params.special_tokens)
@@ -78,9 +78,8 @@ def make_model(config:dict,
     return model
 
 def get_data(split: str):
-    path = os.path.join(CONFIG.dataset.raw_dir, f"{split}.pkl")
+    path = os.path.join(CONFIG.dataset.preproc_dir, f"{split}.pkl")
     data = pd.read_pickle(path).to_numpy()
-
     return data
 
 
@@ -124,9 +123,11 @@ def train(
     val_dataloader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     lr_scheduler,
-    config
+    config,
+    monitor=True
 ):
-    watch_list = [model]
+    if monitor:
+        watch_list = [model]
 
     accelerator = Accelerator(mixed_precision=config.mixed_precision, cpu=config.cpu)
     (
@@ -139,7 +140,8 @@ def train(
         model, optimizer, train_dataloader, val_dataloader, lr_scheduler
     )
 
-    wandb.watch(watch_list, log="all", log_freq=config.log_interval)
+    if monitor:
+        wandb.watch(watch_list, log="all", log_freq=config.log_interval)
 
     # Run training and track with wandb
     steps_per_epoch = len(train_dataloader)
@@ -174,27 +176,36 @@ def train(
             progress_bar.update(1)
             step += 1
 
-            wandb.log(
-                {
-                    "train_loss": loss,
-                    "lr": lr
-                },
-                step=step,
-            )
-
-            # if step % 10 == 0:
-            #     print(f"Loss at epoch {epoch}: {loss} (iter n° {step+1})")
-           
             # # Evaluate the model and save checkpoints
-            # if (step % config.log_interval == 0) or (step == total_steps):
-            #     # Evaluate the model
-            #     # val_loss, val_inner_losses, val_metrics = train_evaluation(
-            #     #     model,
-            #     #     val_dataloader,
-            #     #     loss_fn,
-            #     #     # metrics=metrics,
-            #     # )
-            #     model.train()
+            if (step % config.log_interval == 0) or (step == total_steps):
+                # Evaluate the model
+                val_loss = train_evaluation(
+                    model,
+                    val_dataloader,
+                )
+                model.train()
+
+                if monitor:
+                    wandb.log(
+                        {
+                            "train_loss": loss,
+                            "val_loss": val_loss,
+                            "lr": lr
+                        },
+                        step=step,
+                    )
+
+                print(f"Epoch {epoch}: loss={loss}, val_loss={val_loss}")
+            
+            else:
+                if monitor:
+                    wandb.log(
+                        {
+                            "train_loss": loss,
+                            "lr": lr
+                        },
+                        step=step,
+                    )
 
             #     train_log(
             #         loss,
@@ -226,10 +237,15 @@ def train(
             #     )
             #     checkpoint_counter += 1
 
+
+        print(f"Epoch {epoch}: loss={loss}")  
+
         gc.collect()
         torch.cuda.empty_cache()
 
-    wandb.unwatch(watch_list)
+    if monitor:
+        wandb.unwatch(watch_list)
+        
     accelerator.free_memory()
 
 
@@ -270,40 +286,27 @@ def train_batch(
     return loss.item()
 
 
-# def train_evaluation(
-#     model,
-#     dataloader,
-#     compute_loss: ComputeLoss = None
-#     # , metrics: Dict[str, Metric] = {}
-# ) -> Tuple[AvgValue, Dict[str, AvgValue], Dict[str, AvgValue]]:
-#     model.eval()
-#     avg_loss = AvgValue()
-#     avg_inner_losses = defaultdict(AvgValue)
-#     avg_metrics = defaultdict(AvgValue)
+def train_evaluation(
+    model,
+    dataloader
+):
+    model.eval()
 
-#     forward_signature = set(inspect.signature(model.forward).parameters)
-#     with torch.no_grad():
-#         for data in dataloader:
-#             inputs_kwargs = {
-#                 argument: value
-#                 for argument, value in data.items()
-#                 if argument in forward_signature
-#             }
-#             n_samples = len(next(iter(data.values())))
+    forward_signature = set(inspect.signature(model.forward).parameters)
+    avg_loss = 0
+    with torch.no_grad():
+        for data in dataloader:
+            inputs_kwargs = {
+                argument: value
+                for argument, value in data.items()
+                if argument in forward_signature
+            }
 
-#             outputs = model(**inputs_kwargs, return_dict=True)
-#             if compute_loss is not None:
-#                 loss, inner_losses = compute_loss(outputs, data)
+            outputs = model(**inputs_kwargs, return_dict=True)
 
-#                 avg_loss.update(loss.item(), n_samples)
-#                 for loss_name, loss_value in inner_losses.items():
-#                     avg_inner_losses[loss_name].update(loss_value, n_samples)
+            avg_loss += outputs.loss.item()
 
-#             # for metric_name, metric in metrics.items():
-#             #     metric_value = metric(outputs, data)
-#             #     avg_metrics[metric_name].update(metric_value, n_samples)
-
-#     return avg_loss, avg_inner_losses, avg_metrics
+    return avg_loss/len(dataloader)
 
 
 # def train_log(

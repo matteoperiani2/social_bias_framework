@@ -22,6 +22,11 @@ class Config:
         val_data_agg: str = os.path.join(aggregated_dir, "validation.pkl")
         test_data_agg: str = os.path.join(aggregated_dir, "test.pkl")
 
+        train_dir: str = os.path.join(data_dir, "train")
+        train_data: str = os.path.join(train_dir, "train.pkl")
+        val_data: str = os.path.join(train_dir, "validation.pkl")
+        test_data: str = os.path.join(train_dir, "test.pkl")
+
     class TrainParameters:
         model_name:str = "distilgpt2"
         checkpoint_name:str = "distilgpt2"
