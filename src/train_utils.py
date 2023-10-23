@@ -1,65 +1,43 @@
+import numpy as np
 import pandas as pd
 import gc
 import inspect
 import os
 import torch
 import torch.nn as nn
+import warnings 
 
+from collections import deque
 from tqdm import tqdm
 
 import wandb
+import transformers
 from transformers import GPT2LMHeadModel, AutoTokenizer, get_scheduler
+from transformers.generation import GenerationConfig
 from accelerate import Accelerator
 
 from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
 from .dataset import SBICDataCollator
+from .evaluation import evaluate_predictions
+
+warnings.filterwarnings('ignore') 
 
 CONFIG: Config = Config()
 
-def make(config):
-    # Make the model
-    tokenizer = make_tokinzer(config)
-    model = make_model(config, tokenizer)
-
-    # Make the data
-    train_data, val_data = get_data("train"), get_data("validation")
-    train_dataloader = make_dataloader(train_data, tokenizer, config, split="train")
-    val_dataloader = make_dataloader(val_data, tokenizer, config, split="validation")
-
-    # Make the loss, the optimizer and the scheduler
-    optimizer = make_optimizer(model, config)
-    scheduler = make_scheduler(
-        optimizer, steps_per_epoch=len(train_dataloader), config=config
-    )
-
-    # # Make the evaluation metrics
-    # metrics = make_metrics(tokenizer, config)
-
-    return (
-        model,
-        tokenizer,
-        train_data,
-        val_data,
-        train_dataloader,
-        val_dataloader,
-        # loss_fn,
-        # optimizer,
-        scheduler,
-        # metrics,
-    )
 
 def make_tokinzer(config:dict):
     # checkpoint = CONFIG.checkpoints.__dict__[config.checkpoint_name]
-    tokenizer = AutoTokenizer.from_pretrained("distilgpt2",
+    tokenizer = AutoTokenizer.from_pretrained(config.get("checkpoint_name"),
                                               padding_side=config.padding_side,
                                               use_fast=True)
-    tokenizer.add_special_tokens(CONFIG.train_params.special_tokens)
+    tokenizer.add_special_tokens(CONFIG.model_params.special_tokens)
     print("List of all special token and its token_id:")
     print(" -", tokenizer.all_special_tokens)
     print(" -",tokenizer(tokenizer.all_special_tokens)["input_ids"])
 
     return tokenizer
+
 
 def make_model(config:dict,
                tokenizer:AutoTokenizer):
@@ -70,12 +48,14 @@ def make_model(config:dict,
     model.config.sep_token_id = tokenizer.sep_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
 
+
     print("Model vocab resize:", model.config.vocab_size)
     print("Model eos token:", model.config.eos_token_id)
     print("Model pad token:", model.config.pad_token_id)
     print("Model sep token:", model.config.sep_token_id)
 
     return model
+
 
 def get_data(split: str):
     path = os.path.join(CONFIG.dataset.preproc_dir, f"{split}.pkl")
@@ -117,6 +97,7 @@ def make_scheduler(optimizer, steps_per_epoch, config):
 
     return DummyScheduler(optimizer=optimizer)
 
+
 def train(
     model: nn.Module,
     train_dataloader: torch.utils.data.DataLoader,
@@ -126,6 +107,7 @@ def train(
     config,
     monitor=True
 ):
+    model.train()
     if monitor:
         watch_list = [model]
 
@@ -143,18 +125,14 @@ def train(
     if monitor:
         wandb.watch(watch_list, log="all", log_freq=config.log_interval)
 
-    # Run training and track with wandb
-    steps_per_epoch = len(train_dataloader)
-    total_steps = steps_per_epoch * config.num_epochs
-
-    step = 0
-    model.train()
-
     forward_signature = set(inspect.signature(model.forward).parameters)
-    progress_bar = tqdm(range(total_steps))
+    step = 0
+    max_iters = config.num_epochs * len(train_dataloader)
+    print("Training...")
+    pbar = tqdm(total=max_iters)
     for epoch in range(config.num_epochs):
+        epoch_loss = 0
         for data in train_dataloader:
-
             lr = lr_scheduler.get_last_lr()[0]
 
             inputs = {
@@ -173,81 +151,39 @@ def train(
                 accelerator=accelerator,
                 config=config,
             )
-            progress_bar.update(1)
-            step += 1
+            epoch_loss += loss
 
-            # # Evaluate the model and save checkpoints
-            if (step % config.log_interval == 0) or (step == total_steps):
+            step += 1
+            pbar.update(1)
+
+            if monitor:
+                wandb.log({"train_loss": loss, "lr": lr },
+                          step=step)
+
+            if (step % config.eval_interval) == 0:
+                print(f"Evaluation after the {step} steps...")
                 # Evaluate the model
-                val_loss = train_evaluation(
+                val_losses, avg_val_loss = train_evaluation(
                     model,
                     val_dataloader,
                 )
                 model.train()
-
                 if monitor:
                     wandb.log(
                         {
-                            "train_loss": loss,
-                            "val_loss": val_loss,
+                            "val_loss": avg_val_loss,
                             "lr": lr
                         },
                         step=step,
                     )
-
-                print(f"Epoch {epoch}: loss={loss}, val_loss={val_loss}")
-            
-            else:
-                if monitor:
-                    wandb.log(
-                        {
-                            "train_loss": loss,
-                            "lr": lr
-                        },
-                        step=step,
-                    )
-
-            #     train_log(
-            #         loss,
-            #         # val_loss,
-            #         # val_inner_losses,
-            #         # val_metrics,
-            #         lr=lr_scheduler.get_last_lr()[0],
-            #         step=step,
-            #     )
-            #     avg_loss = AvgValue()
-            #     avg_inner_losses = defaultdict(AvgValue)
-
-            # if step % config.checkpoint_interval == 0:
-            #     # Saving checkpoint
-            #     save_model_checkpoint(
-            #         model,
-            #         optimizer,
-            #         lr_scheduler,
-            #         epoch,
-            #         step,
-            #         checkpoint_counter,
-            #         config,
-            #     )
-            #     wandb.log(
-            #         {
-            #             "checkpoint_counter": checkpoint_counter,
-            #         },
-            #         step=step,
-            #     )
-            #     checkpoint_counter += 1
-
-
-        print(f"Epoch {epoch}: loss={loss}")  
-
-        gc.collect()
-        torch.cuda.empty_cache()
+                print(f"Epoch {epoch}: loss={loss:.4f}, avg_val_loss={avg_val_loss:.4f}")
 
     if monitor:
         wandb.unwatch(watch_list)
-        
+    
+    gc.collect()
     accelerator.free_memory()
-
+    torch.cuda.empty_cache()
 
 def train_batch(
     inputs,
@@ -294,8 +230,9 @@ def train_evaluation(
 
     forward_signature = set(inspect.signature(model.forward).parameters)
     avg_loss = 0
+    losses = deque(maxlen=len(dataloader))
     with torch.no_grad():
-        for data in dataloader:
+        for data in tqdm(dataloader, leave=False, total=len(dataloader)):
             inputs_kwargs = {
                 argument: value
                 for argument, value in data.items()
@@ -303,106 +240,50 @@ def train_evaluation(
             }
 
             outputs = model(**inputs_kwargs, return_dict=True)
+            loss = outputs.loss.item()
+            losses.append(loss)
+            avg_loss += loss
 
-            avg_loss += outputs.loss.item()
-
-    return avg_loss/len(dataloader)
-
-
-# def train_log(
-#     train_loss: AvgValue,
-#     train_inner_losses: Dict[str, AvgValue],
-#     val_loss: AvgValue,
-#     val_inner_losses: Dict[str, AvgValue],
-#     val_metrics: Dict[str, AvgValue],
-#     lr,
-#     step,
-# ):
-#     train_loss = train_loss.avg()
-#     train_inner_losses = {
-#         f"{loss_name}": loss_value.avg()
-#         for loss_name, loss_value in train_inner_losses.items()
-#     }
-
-#     val_loss = val_loss.avg()
-#     val_inner_losses = {
-#         f"val_{loss_name}": loss_value.avg()
-#         for loss_name, loss_value in val_inner_losses.items()
-#     }
-
-#     val_metrics = {
-#         f"val_{metric_name}": metric_value.avg()
-#         for metric_name, metric_value in val_metrics.items()
-#     }
-
-#     wandb.log(
-#         {
-#             "avg_train_loss": train_loss,
-#             **train_inner_losses,
-#             "val_loss": val_loss,
-#             **val_inner_losses,
-#             **val_metrics,
-#             "lr": lr,
-#         },
-#         step=step,
-#     )
-#     print(
-#         f"Iteration: {step:6}",
-#         f"train loss: {train_loss:.4f}",
-#         f"val loss: {val_loss:.4f}",
-#         f"lr: {lr:.6f}",
-#         sep="\t",
-#     )
+    return losses, avg_loss/len(dataloader)
 
 
-# # def save_model_checkpoint(
-# #     model, optimizer, lr_scheduler, epoch, step, checkpoint_counter, config
-# # ):
-# #     checkpoint_file = os.path.join(
-# #         CONFIG.models.checkpoints_dir(
-# #             config.model_name, config.get("history_length", 0) > 0
-# #         ),
-# #         config.model_name,
-# #         f"checkpoint_{checkpoint_counter}.pt",
-# #     )
-# #     create_dirs_for_file(checkpoint_file)
+def evaluate(
+    model:transformers.AutoModel, 
+    tokenizer:transformers.AutoTokenizer, 
+    dataloader:torch.utils.data.DataLoader, 
+    config:dict
+):  
+    model.eval()
+    gen_cfg = GenerationConfig.from_model_config(model.config)
+    gen_cfg.max_new_tokens = 100
+    gen_cfg.max_length = 512
+    
+    class_f1s = deque(maxlen=len(dataloader))
+    minor_rouge = deque(maxlen=len(dataloader))
+    strtp_rouge = deque(maxlen=len(dataloader))
 
-# #     save_checkpoint(
-# #         model,
-# #         optimizer,
-# #         lr_scheduler,
-# #         epoch,
-# #         step,
-# #         checkpoint_counter,
-# #         checkpoint_path=checkpoint_file,
-# #     )
-# #     wandb.save(f"{config.model_name}_{checkpoint_counter}.pt")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    with torch.no_grad():
+        for data in tqdm(dataloader, leave=False, total=len(dataloader)):
+            input_ids = torch.as_tensor(data.pop("input_ids"), device=device)
+            generate_out = model.generate(inputs = input_ids, generation_config=gen_cfg)
+            generate_out = generate_out.cpu().numpy()
+            
+            # remove from the output the input prompt
+            preds = [gen[np.where(gen == tokenizer.sep_token_id)[0][0]+1:] for gen in generate_out]
+            
+            score = evaluate_predictions(tokenizer, preds, data)
+            class_f1s.append(score["class_f1"])
+            minor_rouge.extend(score["rouge_minor"])
+            strtp_rouge.extend(score["rouge_strtp"])
 
+    clasification_f1_score = np.mean(class_f1s, axis=0)
+    minority_rouge_f1_score = np.mean(minor_rouge, axis=0)
+    stereotype_rouge_f1_score = np.mean(strtp_rouge, axis=0)
 
-# # def load_model_checkpoint(
-# #     checkpoint_counter, config, model, optimizer=None, lr_scheduler=None
-# # ):
-# #     checkpoint_file = os.path.join(
-# #         CONFIG.models.checkpoints_dir(
-# #             config.model_name, config.get("history_length", 0) > 0
-# #         ),
-# #         config.model_name,
-# #         f"checkpoint_{checkpoint_counter}.pt",
-# #     )
-# #     return load_checkpoint(
-# #         checkpoint_file, model, optimizer=optimizer, scheduler=lr_scheduler
-# #     )
-
-
-# def evaluate(model, tokenizer, train_data: SBICDataset, val_data: SBICDataset, test_data: SBICDataset, config):
-#     datasets = [("train", train_data), ("val", val_data), ("test", test_data)]
-#     results = {}
-#     for dataset_name, dataset in datasets:
-#         print(f"eval  {dataset_name}")
-#         outputs, metrics = eval_classification_token(model, tokenizer, dataset, config)
-#         results[dataset_name] = (outputs, metrics)
-
-#         gc.collect()
-#         torch.cuda.empty_cache()
-
-#     return results
+    return {
+        "clasification_f1_score": clasification_f1_score,
+        "minority_rouge_f1_score": minority_rouge_f1_score,
+        "stereotype_rouge_f1_score": stereotype_rouge_f1_score
+    }

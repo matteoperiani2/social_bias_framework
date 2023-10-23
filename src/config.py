@@ -1,6 +1,17 @@
 import os
 import torch
 
+class PropertyDict(dict):
+    def __getattr__(self, key):
+        if key in self:
+            return self[key]
+        raise AttributeError(
+            f"'{self.__class__.__name__}' object has no attribute '{key}'"
+        )
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
 class Config:
     
     class Dataset:
@@ -27,7 +38,7 @@ class Config:
         val_data: str = os.path.join(train_dir, "validation.pkl")
         test_data: str = os.path.join(train_dir, "test.pkl")
 
-    class TrainParameters:
+    class ModelParameters:
         model_name:str = "distilgpt2"
         checkpoint_name:str = "distilgpt2"
         epochs:int = 3
@@ -72,15 +83,36 @@ class Config:
     class WandbConfig:
         """Specify the parameters of `wandb.init`"""
 
-        project: str = "matteo-periani"
-        entity: str = "matteo-periani"
+        project: str = "project"
+        entity: str = "matteoperiani"
         
     dataset: Dataset = Dataset()
-    train_params: TrainParameters = TrainParameters()
+    model_params: ModelParameters = ModelParameters()
     checkpoints: Checkpoints = Checkpoints()
     utils: Utils = Utils()
     wandbConfig:WandbConfig = WandbConfig()
-    seed:int = 42
+
+    hp = PropertyDict(
+        seed=42,
+        checkpoint_name="gpt2",
+        model_name="gpt2",
+        padding_side="left",
+        train_perc=.1,
+        val_perc=.1,
+        batch_size=8,
+        val_batch_size=8,
+        num_epochs=2,
+        learning_rate=5e-4,
+        scheduler="linear",
+        warmup_fraction=0.1,
+        accumulation_steps=1,
+        gradient_clip = 1.0,
+        mixed_precision="fp16",
+        log_interval=200,
+        eval_interval = 400,
+        num_workers=0,
+        cpu=False
+    )
 
 
 CONFIG:Config = Config()
