@@ -140,3 +140,12 @@ def get_minorities_embedding(df:pd.DataFrame):
     min_emb = dict(zip(minorities, embeddings))
     
     return min_counter, min_emb
+
+
+def print_evaluation_results(split, res):
+    annotation_type = ["Offensive", "Intent", "Sex", "Group", "In-Group"]
+    print(f"Classification F1 on {split} set: avg={np.mean(res['clasification_f1_score']):.3f}")
+    for type, score in zip(annotation_type, res['clasification_f1_score']):
+        print(f" - {type}: {score:.3f}")
+    print(f"Minority RougeL-f1 on {split} set: {res['minority_rouge_f1_score']:.3f}")
+    print(f"Stereotype RougeL-f1 on {split} set: {res['stereotype_rouge_f1_score']:.3f}")

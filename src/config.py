@@ -94,23 +94,21 @@ class Config:
 
     hp = PropertyDict(
         seed=42,
-        checkpoint_name="gpt2",
-        model_name="gpt2",
+        checkpoint_name="distilgpt2",
+        model_name="distilgpt2",
         padding_side="left",
-        train_perc=.1,
-        val_perc=.1,
+        train_perc=1,
+        val_perc=1,
         batch_size=8,
-        val_batch_size=8,
-        num_epochs=2,
-        learning_rate=5e-4,
+        num_epochs=1,
+        learning_rate=1e-4,
         scheduler="linear",
         warmup_fraction=0.1,
         accumulation_steps=1,
         gradient_clip = 1.0,
         mixed_precision="fp16",
         log_interval=200,
-        eval_interval = 400,
-        num_workers=0,
+        eval_interval = 4000,
         cpu=False
     )
 

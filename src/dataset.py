@@ -36,16 +36,17 @@ class SBICDataset(Dataset):
         input_str = post + self.tokenizer.sep_token # post <|sep|>
 
         class_features_enc = [self.labels_encoder[idx][val] for idx,val in enumerate(class_features)]
-
-         # offY/N intY/N sexY/N grpY/N <|sep|> 
-        label_str = "".join(class_features_enc[:4]) + self.tokenizer.sep_token 
-
-        if mionority != "" and   stereotype!= "":
-            label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  # minority <|sep|> stereotype <|sep|>
-
-        label_str += class_features_enc[-1] + self.tokenizer.eos_token # ingrpY/N <|eos|>
         
         if self.is_training:
+
+            # offY/N intY/N sexY/N grpY/N <|sep|> 
+            label_str = "".join(class_features_enc[:4]) + self.tokenizer.sep_token 
+
+            if mionority != "" and   stereotype!= "":
+                label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  # minority <|sep|> stereotype <|sep|>
+
+            label_str += class_features_enc[-1] + self.tokenizer.eos_token # ingrpY/N <|eos|>
+
             # input encoding
             inputs = self.tokenizer(
                 text=input_str,
@@ -72,8 +73,8 @@ class SBICDataset(Dataset):
             return {
                 "input_ids": self.tokenizer(input_str)["input_ids"],
                 "class_labels": self.tokenizer(''.join(class_features_enc))["input_ids"],
-                "minority_labels": self.tokenizer(mionority)["input_ids"],
-                "stereotype_labels": self.tokenizer(stereotype)["input_ids"]
+                "minority_labels": mionority,
+                "stereotype_labels": stereotype
             }
 
 

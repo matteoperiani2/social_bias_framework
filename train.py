@@ -23,14 +23,15 @@ with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
     # Make the data
     train_data = get_data("train")
     val_data = get_data("validation")
-
-    train_size = int((config.train_perc * len(train_data)) / config.batch_size) * config.batch_size
-    val_size = int((config.val_perc * len(val_data)) / config.val_batch_size) * config.batch_size
-    train_idxs = np.random.choice(train_data.shape[0], train_size, replace=False)
-    val_idxs = np.random.choice(val_data.shape[0], val_size, replace=False)
     
-    train_data = train_data[train_idxs]
-    val_data = val_data[val_idxs]
+    if config.train_perc != 1 or config.val_perc != 1:
+        train_size = int((config.train_perc * len(train_data)) / config.batch_size) * config.batch_size
+        val_size = int((config.val_perc * len(val_data)) / config.batch_size) * config.batch_size
+        train_idxs = np.random.choice(train_data.shape[0], train_size, replace=False)
+        val_idxs = np.random.choice(val_data.shape[0], val_size, replace=False)
+        
+        train_data = train_data[train_idxs]
+        val_data = val_data[val_idxs]
 
     train_dataset = SBICDataset(train_data, tokenizer)
     val_dataset = SBICDataset(val_data, tokenizer)

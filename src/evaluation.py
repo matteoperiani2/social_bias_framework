@@ -7,17 +7,19 @@ from .config import CONFIG
 rouge_metric = Rouge()
 
 def evaluate_predictions(tokenizer, predictions, labels):
-    class_labels, minority_labels, stereotype_labels = get_labels(tokenizer, labels)
+    class_labels = reshape_tokens_for_metric(labels["class_labels"])
     class_preds, minority_preds, stereotype_preds = get_predictions(tokenizer, predictions)
 
     f1_classifiaction = eval_classification_tokens(tokenizer, class_labels, class_preds)
-    f1_rouge_minority = eval_generation_tokens(minority_labels, minority_preds)
-    f1_rouge_stereotype = eval_generation_tokens(stereotype_labels, stereotype_preds)
+    f1_rouge_minority = eval_generation_tokens(labels["minority_labels"], minority_preds)
+    f1_rouge_stereotype = eval_generation_tokens(labels["stereotype_labels"], stereotype_preds)
 
     return {
         "class_f1": f1_classifiaction,
         "rouge_minor": f1_rouge_minority,
         "rouge_strtp": f1_rouge_stereotype
+        # "rouge_minor": [0],
+        # "rouge_strtp": [0]
     }
 
 
@@ -34,14 +36,6 @@ def reshape_tokens_for_metric(tokens):
                 class_labels.append(-1)
     
     return np.reshape(class_labels, (n_class, n_lbls))
-
-
-def get_labels(tokenizer, labels):
-    class_labels = reshape_tokens_for_metric(labels["class_labels"])
-    minority_labels = tokenizer.batch_decode(labels["minority_labels"])
-    stereotype_labels = tokenizer.batch_decode(labels["stereotype_labels"])
-
-    return class_labels, minority_labels, stereotype_labels
 
 
 def get_predictions(tokenizer, predictions):
@@ -108,11 +102,15 @@ def eval_classification_tokens(tokenizer, labels, predictions):
 def eval_generation_tokens(labels, predictions):
     rouge_score = []
     for lbls, preds in zip(labels, predictions):
-        if lbls != '':
+        if len(lbls) > 0:
             if preds != '':
-                r_score = rouge_metric.get_scores(preds, lbls)[0]["rouge-l"]["f"]
-                rouge_score.append(np.nan_to_num(r_score))
+                lbl_score = []
+                for lbl in lbls:
+                    r_score = rouge_metric.get_scores(preds, lbl)[0]["rouge-l"]["f"]
+                    lbl_score.append(r_score)
+
+                rouge_score.append(np.nan_to_num(np.mean(lbl_score)))
             else:
                 rouge_score.append(0.)
-
+            
     return rouge_score

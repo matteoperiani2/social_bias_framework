@@ -41,8 +41,7 @@ def make_tokinzer(config:dict):
 
 def make_model(config:dict,
                tokenizer:AutoTokenizer):
-    checkpoint = CONFIG.checkpoints.__dict__[config.checkpoint_name]
-    model = GPT2LMHeadModel.from_pretrained(checkpoint)
+    model = GPT2LMHeadModel.from_pretrained(config.get("checkpoint_name"))
     model.resize_token_embeddings(len(tokenizer))
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.sep_token_id = tokenizer.sep_token_id
@@ -67,13 +66,9 @@ def make_dataloader(dataset, model, tokenizer, config, split: str):
     data_collator = SBICDataCollator(tokenizer=tokenizer, model=model)
     dataloader = create_reproducible_dataloader(
         dataset,
-        batch_size=config.val_batch_size
-        if split != "train" and "val_batch_size" in config
-        else config.batch_size,
+        batch_size=config.batch_size,
         collate_fn=data_collator,
-        num_workers=config.val_num_workers
-        if split != "train" and "val_num_workers" in config
-        else config.num_workers,
+        num_workers=0,
         pin_memory=True,
         shuffle=split == "train",
     )
@@ -160,7 +155,7 @@ def train(
                 wandb.log({"train_loss": loss, "lr": lr },
                           step=step)
 
-            if (step % config.eval_interval) == 0:
+            if (step % config.eval_interval == 0) or max_iters == step:
                 print(f"Evaluation after the {step} steps...")
                 # Evaluate the model
                 val_losses, avg_val_loss = train_evaluation(
@@ -267,7 +262,8 @@ def evaluate(
     with torch.no_grad():
         for data in tqdm(dataloader, leave=False, total=len(dataloader)):
             input_ids = torch.as_tensor(data.pop("input_ids"), device=device)
-            generate_out = model.generate(inputs = input_ids, generation_config=gen_cfg)
+            generate_out = model.generate(inputs = input_ids,
+                                          generation_config=gen_cfg)
             generate_out = generate_out.cpu().numpy()
             
             # remove from the output the input prompt
