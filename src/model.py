@@ -36,11 +36,9 @@ class GPT2DoubleHeadsModelOutput(ModelOutput):
             GPT2Attentions weights after the attention softmax, used to compute the weighted average in the
             self-attention heads.
     """
-
-    loss: Optional[torch.FloatTensor] = None
-    mc_loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
-    mc_logits: torch.FloatTensor = None
+    
+    lm_logits: torch.FloatTensor = None
+    clssf_logits: torch.FloatTensor = None
     past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
@@ -51,12 +49,12 @@ class GPT2WithClassificationHead(GPT2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.gpt2 = GPT2Model(config)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         
         self.classifiers = []
         # classification heads 
         for i in range(5):
-            self.classifiers.append(nn.Linear(config.n_embd, 1, bias=True))
+            self.classifiers.append(nn.Linear(768, 1, bias=True))
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -71,7 +69,7 @@ class GPT2WithClassificationHead(GPT2PreTrainedModel):
         head_mask: Optional[torch.FloatTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        mc_labels: Optional[torch.LongTensor] = None,
+        clssf_labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -113,31 +111,14 @@ class GPT2WithClassificationHead(GPT2PreTrainedModel):
 
         clssf_logits = []
         for i in range(5):
-            clssf_logits.append(self.classifiers[i](hidden_states))
-
-        mc_loss = None
-        if mc_labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
-            mc_loss = loss_fct(mc_logits.view(-1, mc_logits.size(-1)), mc_labels.view(-1))
-        lm_loss = None
-        if labels is not None:
-            labels = labels.to(lm_logits.device)
-            shift_logits = lm_logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss_fct = nn.CrossEntropyLoss()
-            lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            clssf_logits.append(self.classifiers[i](hidden_states[:, -1, :]).squeeze(-1))
 
         if not return_dict:
-            output = (lm_logits, mc_logits) + gpt2_outputs[1:]
-            if mc_loss is not None:
-                output = (mc_loss,) + output
-            return ((lm_loss,) + output) if lm_loss is not None else output
+            return (lm_logits, clssf_logits) + gpt2_outputs[1:]
 
         return GPT2DoubleHeadsModelOutput(
-            loss=lm_loss,
-            mc_loss=mc_loss,
-            logits=lm_logits,
-            mc_logits=mc_logits,
+            lm_logits=lm_logits,
+            clssf_logits=clssf_logits,
             past_key_values=gpt2_outputs.past_key_values,
             hidden_states=gpt2_outputs.hidden_states,
             attentions=gpt2_outputs.attentions,
