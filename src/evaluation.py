@@ -9,6 +9,8 @@ rouge_metric = Rouge()
 def evaluate_predictions(tokenizer, predictions, labels):
     class_labels = reshape_tokens_for_metric(labels["class_labels"])
     class_preds, minority_preds, stereotype_preds = get_predictions(tokenizer, predictions)
+    class_preds = np.asarray(class_preds).transpose()
+
 
     f1_classifiaction = eval_classification_tokens(tokenizer, class_labels, class_preds)
     f1_rouge_minority = eval_generation_tokens(labels["minority_labels"], minority_preds)
@@ -46,7 +48,7 @@ def get_predictions(tokenizer, predictions):
     for pred in predictions:
         sep_idx = np.where(pred == tokenizer.sep_token_id)[0]
         eos_idx = np.where(pred == tokenizer.eos_token_id)[0]
-        
+
         # --- get classification tokens --- 
         if len(eos_idx) > 0:
             # concatenate first 4 tokens with the token generated before the eos
@@ -54,7 +56,7 @@ def get_predictions(tokenizer, predictions):
         else:
             # concatenate first 4 tokens with the last generated token
             class_preds.append(np.concatenate((pred[:4], [pred[-1]])))
-        
+    
         # --- get minority and stereotype tokens ---
         if len(sep_idx) > 0:
             ## MINORITY
@@ -68,11 +70,17 @@ def get_predictions(tokenizer, predictions):
                     stereotype_preds.append(pred[sep_idx[1]+1:sep_idx[2]])
                 else:
                     # select as stereotype tokens, those tokens that are after the 2nd sep
-                    stereotype_preds.append(pred[sep_idx[1]+1:])
+                    if len(eos_idx) > 0:
+                        stereotype_preds.append(pred[sep_idx[1]+1:eos_idx[0]-1])
+                    else:
+                        stereotype_preds.append(pred[sep_idx[1]+1:len(pred)-1])
             else:
                 # select as minority tokens, those tokens that are after the sep
                 # for stereotypes no tokens are selected
-                minority_preds.append(pred[sep_idx[0]+1:])
+                if len(eos_idx) > 0:
+                    minority_preds.append(pred[sep_idx[0]+1:eos_idx[0]-1])
+                else:
+                    minority_preds.append(pred[sep_idx[0]+1:len(pred)-1])
                 stereotype_preds.append([])
         else:
             # in the case the output is very bad, both minority and stereotypes are discarded
@@ -80,7 +88,6 @@ def get_predictions(tokenizer, predictions):
             stereotype_preds.append([])
 
 
-    class_preds = reshape_tokens_for_metric(class_preds)
     minority_preds = tokenizer.batch_decode(minority_preds)
     stereotype_preds = tokenizer.batch_decode(stereotype_preds)
 
@@ -109,7 +116,7 @@ def eval_generation_tokens(labels, predictions):
                     r_score = rouge_metric.get_scores(preds, lbl)[0]["rouge-l"]["f"]
                     lbl_score.append(r_score)
 
-                rouge_score.append(np.nan_to_num(np.mean(lbl_score)))
+                rouge_score.append(np.nan_to_num(np.max(lbl_score)))
             else:
                 rouge_score.append(0.)
             

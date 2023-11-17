@@ -97,18 +97,18 @@ class Config:
         checkpoint_name="distilgpt2",
         model_name="distilgpt2",
         padding_side="left",
-        train_perc=1,
-        val_perc=1,
+        train_perc=0.1,
+        val_perc=0.1,
         batch_size=8,
         num_epochs=1,
-        learning_rate=1e-4,
+        learning_rate=1e-5,
         scheduler="linear",
         warmup_fraction=0.1,
         accumulation_steps=1,
         gradient_clip = 1.0,
         mixed_precision="fp16",
         log_interval=200,
-        eval_interval = 4000,
+        eval_interval = 200,
         cpu=False
     )
 

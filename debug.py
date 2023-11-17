@@ -17,5 +17,5 @@ outputs = model(input_ids)
 
 c_labels = torch.tensor([[0,1], [0,0],[1,1],[0,1],[0,1]], dtype=float)
 weight = torch.tensor([0.44, 0.6, 0.8, 0.34, 0.41])
-clssf_loss = classification_loss(outputs.clssf_logits, c_labels, weight)
+clssf_loss = classification_loss(outputs.clssf_logits, c_labels, torch.ones(5), weight)
 print("end")

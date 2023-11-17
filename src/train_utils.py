@@ -20,6 +20,7 @@ from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
 from .dataset import SBICDataCollator
 from .evaluation import evaluate_predictions
+from .losses import *
 
 warnings.filterwarnings('ignore') 
 
@@ -100,7 +101,8 @@ def train(
     optimizer: torch.optim.Optimizer,
     lr_scheduler,
     config,
-    monitor=True
+    monitor=True,
+    use_def_loss = True
 ):
     model.train()
     if monitor:
@@ -124,54 +126,64 @@ def train(
     step = 0
     max_iters = config.num_epochs * len(train_dataloader)
     print("Training...")
-    pbar = tqdm(total=max_iters)
-    for epoch in range(config.num_epochs):
-        epoch_loss = 0
-        for data in train_dataloader:
-            lr = lr_scheduler.get_last_lr()[0]
+    with tqdm(total=max_iters, unit="batch") as pbar:
+        for epoch in range(config.num_epochs):
+            epoch_loss = 0
+            for data in train_dataloader:
+                pbar.set_description(F"Epoch {epoch}")
+                lr = lr_scheduler.get_last_lr()[0]
 
-            inputs = {
-                argument: value
-                for argument, value in data.items()
-                if argument in forward_signature
-            }
+                inputs = {
+                    argument: value
+                    for argument, value in data.items()
+                    if argument in forward_signature
+                }
 
-            loss = train_batch(
-                inputs=inputs,
-                data=data,
-                step=step,
-                model=model,
-                optimizer=optimizer,
-                lr_scheduler=lr_scheduler,
-                accelerator=accelerator,
-                config=config,
-            )
-            epoch_loss += loss
-
-            step += 1
-            pbar.update(1)
-
-            if monitor:
-                wandb.log({"train_loss": loss, "lr": lr },
-                          step=step)
-
-            if (step % config.eval_interval == 0) or max_iters == step:
-                print(f"Evaluation after the {step} steps...")
-                # Evaluate the model
-                val_losses, avg_val_loss = train_evaluation(
-                    model,
-                    val_dataloader,
+                struc_loss, def_loss = train_batch(
+                    inputs=inputs,
+                    data=data,
+                    step=step,
+                    model=model,
+                    optimizer=optimizer,
+                    lr_scheduler=lr_scheduler,
+                    accelerator=accelerator,
+                    config=config,
+                    use_def_loss=use_def_loss
                 )
-                model.train()
+                loss = def_loss if use_def_loss else struc_loss
+
+
+                epoch_loss += loss
+
+                step += 1
+                pbar.update(1)
+
                 if monitor:
-                    wandb.log(
-                        {
-                            "val_loss": avg_val_loss,
-                            "lr": lr
-                        },
-                        step=step,
+                    wandb.log({"train_loss_structure": struc_loss, 
+                            "train_loss_def": def_loss,
+                            "lr": lr },
+                                step=step)
+
+                if (step % config.eval_interval == 0) or max_iters == step:
+                    print(f"Evaluation after the {step} steps...")
+                    # Evaluate the model
+                    val_losses, def_val_losses, avg_val_loss, avg_val_loss_def = train_evaluation(
+                        model,
+                        val_dataloader,
                     )
-                print(f"Epoch {epoch}: loss={loss:.4f}, avg_val_loss={avg_val_loss:.4f}")
+                    model.train()
+                    if monitor:
+                        wandb.log(
+                            {
+                                "val_loss": avg_val_loss,
+                                "val_loss_def": avg_val_loss_def,
+                                "lr": lr
+                            },
+                            step=step,
+                        )
+                    print(f"Epoch {epoch}:\n - loss={struc_loss:.4f} def_loss={def_loss:.4f}\n - avg_val_loss={avg_val_loss:.4f}, avg_val_loss_def={avg_val_loss_def:.4f}")
+
+                pbar.set_postfix(loss=loss)
 
     if monitor:
         wandb.unwatch(watch_list)
@@ -188,6 +200,7 @@ def train_batch(
     optimizer,
     lr_scheduler,
     config,
+    use_def_loss=True,
     accelerator=None,
     device=None,
 ):
@@ -200,7 +213,11 @@ def train_batch(
 
     outputs = model(**inputs, return_dict=True)
 
-    loss = outputs.loss
+    def_loss = default_lm_loss(outputs.logits, data["labels"])
+    struc_loss = structure_loss(outputs.logits, data["labels"])
+
+    loss = def_loss if use_def_loss else struc_loss
+
     if accelerator is not None:
         accelerator.backward(loss)
     else:
@@ -214,7 +231,7 @@ def train_batch(
         optimizer.zero_grad()
     lr_scheduler.step()
 
-    return loss.item()
+    return struc_loss.item(), def_loss.item()
 
 
 def train_evaluation(
@@ -224,8 +241,10 @@ def train_evaluation(
     model.eval()
 
     forward_signature = set(inspect.signature(model.forward).parameters)
-    avg_loss = 0
-    losses = deque(maxlen=len(dataloader))
+    avg_loss_structure = 0
+    avg_loss_def = 0
+    structure_losses = deque(maxlen=len(dataloader))
+    def_losses = deque(maxlen=len(dataloader))
     with torch.no_grad():
         for data in tqdm(dataloader, leave=False, total=len(dataloader)):
             inputs_kwargs = {
@@ -235,11 +254,14 @@ def train_evaluation(
             }
 
             outputs = model(**inputs_kwargs, return_dict=True)
-            loss = outputs.loss.item()
-            losses.append(loss)
-            avg_loss += loss
+            def_loss = default_lm_loss(outputs.logits, data["labels"]).item()
+            loss = structure_loss(outputs.logits, data["labels"]).item()
+            structure_losses.append(loss)
+            def_losses.append(def_loss)
+            avg_loss_structure += loss
+            avg_loss_def += def_loss
 
-    return losses, avg_loss/len(dataloader)
+    return structure_losses, def_losses, avg_loss_structure/len(dataloader), avg_loss_def/len(dataloader)
 
 
 def evaluate(
@@ -279,6 +301,7 @@ def evaluate(
     stereotype_rouge_f1_score = np.mean(strtp_rouge, axis=0)
 
     return {
+        "out_tokens": generate_out,
         "clasification_f1_score": clasification_f1_score,
         "minority_rouge_f1_score": minority_rouge_f1_score,
         "stereotype_rouge_f1_score": stereotype_rouge_f1_score

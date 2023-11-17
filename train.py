@@ -33,6 +33,7 @@ with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
         train_data = train_data[train_idxs]
         val_data = val_data[val_idxs]
 
+
     train_dataset = SBICDataset(train_data, tokenizer)
     val_dataset = SBICDataset(val_data, tokenizer)
 
@@ -52,9 +53,10 @@ with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
         optimizer,
         scheduler,
         config,
+        use_def_loss=False
     )
 
-    torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_{train_size}_{config.num_epochs}.pt")
+    torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_{train_size}_{config.num_epochs}_sl.pt")
 
 gc.collect()
 torch.cuda.empty_cache()

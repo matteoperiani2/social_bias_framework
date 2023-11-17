@@ -112,8 +112,7 @@ class SBICDatasetPreprocessing:
         aggDict.update({c: lambda x: set(x) for c in ["dataSource"]})
 
         agg_df = df.groupby("post", as_index=False).agg(aggDict)
-        agg_df['targetGroup'] = agg_df['targetGroup'].apply(lambda c: [m.lower().strip() for min in c for m in min.split(",")])
-
+        # agg_df['targetGroup'] = agg_df['targetGroup'].apply(lambda c: [m.lower().strip() for min in c for m in min.split(",")])
     
         # agg_df = self.binarize_classification_features(agg_df)
         for field in ['offensiveYN', 'intentYN', 'sexYN']:
