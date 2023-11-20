@@ -24,15 +24,17 @@ with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
     train_data = get_data("train")
     val_data = get_data("validation")
     
-    if config.train_perc != 1 or config.val_perc != 1:
-        train_size = int((config.train_perc * len(train_data)) / config.batch_size) * config.batch_size
-        val_size = int((config.val_perc * len(val_data)) / config.batch_size) * config.batch_size
-        train_idxs = np.random.choice(train_data.shape[0], train_size, replace=False)
-        val_idxs = np.random.choice(val_data.shape[0], val_size, replace=False)
+    # if config.train_perc != 1 or config.val_perc != 1:
+    #     train_size = int((config.train_perc * len(train_data)) / config.batch_size) * config.batch_size
+    #     val_size = int((config.val_perc * len(val_data)) / config.batch_size) * config.batch_size
+    #     train_idxs = np.random.choice(train_data.shape[0], train_size, replace=False)
+    #     val_idxs = np.random.choice(val_data.shape[0], val_size, replace=False)
         
-        train_data = train_data[train_idxs]
-        val_data = val_data[val_idxs]
+    #     train_data = train_data[train_idxs]
+    #     val_data = val_data[val_idxs]
 
+    train_data = get_data("train")[:10832]
+    val_data = get_data("validation")[:1000]
 
     train_dataset = SBICDataset(train_data, tokenizer)
     val_dataset = SBICDataset(val_data, tokenizer)
@@ -52,11 +54,11 @@ with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
         val_dataloader,
         optimizer,
         scheduler,
-        config,
-        use_def_loss=False
+        config, 
+        monitor=False
     )
 
-    torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_{train_size}_{config.num_epochs}_sl.pt")
+    torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_10832_{config.num_epochs}_ce.pt")
 
 gc.collect()
 torch.cuda.empty_cache()

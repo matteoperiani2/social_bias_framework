@@ -19,8 +19,8 @@ from accelerate import Accelerator
 from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
 from .dataset import SBICDataCollator
-from .evaluation import evaluate_predictions
-from .losses import *
+from .evaluation import evaluate_predictions, eval_classifications
+from .losses import CEwithStructureImportance
 
 warnings.filterwarnings('ignore') 
 
@@ -102,7 +102,6 @@ def train(
     lr_scheduler,
     config,
     monitor=True,
-    use_def_loss = True
 ):
     model.train()
     if monitor:
@@ -122,6 +121,8 @@ def train(
     if monitor:
         wandb.watch(watch_list, log="all", log_freq=config.log_interval)
 
+    loss_fn = CEwithStructureImportance(alpha=config.loss_alpha)
+
     forward_signature = set(inspect.signature(model.forward).parameters)
     step = 0
     max_iters = config.num_epochs * len(train_dataloader)
@@ -139,19 +140,17 @@ def train(
                     if argument in forward_signature
                 }
 
-                struc_loss, def_loss = train_batch(
+                loss = train_batch(
                     inputs=inputs,
                     data=data,
                     step=step,
                     model=model,
                     optimizer=optimizer,
+                    loss_fn=loss_fn,
                     lr_scheduler=lr_scheduler,
                     accelerator=accelerator,
-                    config=config,
-                    use_def_loss=use_def_loss
+                    config=config
                 )
-                loss = def_loss if use_def_loss else struc_loss
-
 
                 epoch_loss += loss
 
@@ -159,29 +158,28 @@ def train(
                 pbar.update(1)
 
                 if monitor:
-                    wandb.log({"train_loss_structure": struc_loss, 
-                            "train_loss_def": def_loss,
-                            "lr": lr },
-                                step=step)
+                    wandb.log({"train_loss": loss,
+                               "lr": lr },
+                              step=step)
 
                 if (step % config.eval_interval == 0) or max_iters == step:
                     print(f"Evaluation after the {step} steps...")
                     # Evaluate the model
-                    val_losses, def_val_losses, avg_val_loss, avg_val_loss_def = train_evaluation(
+                    _, avg_val_loss = train_evaluation(
                         model,
                         val_dataloader,
+                        loss_fn=loss_fn
                     )
                     model.train()
                     if monitor:
                         wandb.log(
                             {
                                 "val_loss": avg_val_loss,
-                                "val_loss_def": avg_val_loss_def,
                                 "lr": lr
                             },
                             step=step,
                         )
-                    print(f"Epoch {epoch}:\n - loss={struc_loss:.4f} def_loss={def_loss:.4f}\n - avg_val_loss={avg_val_loss:.4f}, avg_val_loss_def={avg_val_loss_def:.4f}")
+                    print(f"Epoch {epoch}:\n - loss={loss:.4f} - avg_val_loss={avg_val_loss:.4f}")
 
                 pbar.set_postfix(loss=loss)
 
@@ -198,9 +196,9 @@ def train_batch(
     step,
     model,
     optimizer,
+    loss_fn,
     lr_scheduler,
     config,
-    use_def_loss=True,
     accelerator=None,
     device=None,
 ):
@@ -212,11 +210,8 @@ def train_batch(
         data = {key: value.to(device) for key, value in data.items()}
 
     outputs = model(**inputs, return_dict=True)
-
-    def_loss = default_lm_loss(outputs.logits, data["labels"])
-    struc_loss = structure_loss(outputs.logits, data["labels"])
-
-    loss = def_loss if use_def_loss else struc_loss
+    
+    loss = loss_fn(outputs.logits, data["labels"])
 
     if accelerator is not None:
         accelerator.backward(loss)
@@ -231,20 +226,19 @@ def train_batch(
         optimizer.zero_grad()
     lr_scheduler.step()
 
-    return struc_loss.item(), def_loss.item()
+    return loss.item()
 
 
 def train_evaluation(
     model,
-    dataloader
+    dataloader,
+    loss_fn
 ):
     model.eval()
 
     forward_signature = set(inspect.signature(model.forward).parameters)
-    avg_loss_structure = 0
-    avg_loss_def = 0
-    structure_losses = deque(maxlen=len(dataloader))
-    def_losses = deque(maxlen=len(dataloader))
+    avg_loss = 0
+    losses = deque(maxlen=len(dataloader))
     with torch.no_grad():
         for data in tqdm(dataloader, leave=False, total=len(dataloader)):
             inputs_kwargs = {
@@ -254,14 +248,11 @@ def train_evaluation(
             }
 
             outputs = model(**inputs_kwargs, return_dict=True)
-            def_loss = default_lm_loss(outputs.logits, data["labels"]).item()
-            loss = structure_loss(outputs.logits, data["labels"]).item()
-            structure_losses.append(loss)
-            def_losses.append(def_loss)
-            avg_loss_structure += loss
-            avg_loss_def += def_loss
+            loss = loss_fn(outputs.logits, data["labels"])
+            losses.append(loss)
+            avg_loss += loss
 
-    return structure_losses, def_losses, avg_loss_structure/len(dataloader), avg_loss_def/len(dataloader)
+    return losses, avg_loss/len(dataloader)
 
 
 def evaluate(
@@ -305,4 +296,51 @@ def evaluate(
         "clasification_f1_score": clasification_f1_score,
         "minority_rouge_f1_score": minority_rouge_f1_score,
         "stereotype_rouge_f1_score": stereotype_rouge_f1_score
+    }
+
+
+def evaluate_classification(
+    model:transformers.AutoModel, 
+    tokenizer:transformers.AutoTokenizer, 
+    dataloader:torch.utils.data.DataLoader, 
+    config:dict
+):  
+    model.eval()
+    gen_cfg = GenerationConfig.from_model_config(model.config)
+    gen_cfg.max_new_tokens = 100
+    gen_cfg.max_length = 512
+    
+    labels = None
+    predictions = None
+    batchs_f1 = deque(maxlen=len(dataloader))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    with torch.no_grad():
+        for data in tqdm(dataloader, leave=False, total=len(dataloader)):
+            input_ids = torch.as_tensor(data.pop("input_ids"), device=device)
+            generate_out = model.generate(inputs = input_ids,
+                                          generation_config=gen_cfg)
+            generate_out = generate_out.cpu().numpy()
+            
+            # remove from the output the input prompt
+            preds = [gen[np.where(gen == tokenizer.sep_token_id)[0][0]+1:] for gen in generate_out]
+            
+            res = eval_classifications(tokenizer, preds, data)
+            if labels is None:
+                labels = res["labels"]
+            else:
+                labels = np.concatenate((labels, res["labels"]), axis=1)
+            if predictions is None:
+                predictions = res["predictions"]
+            else:
+                predictions = np.concatenate((predictions, res["predictions"]), axis=1)
+            batchs_f1.append(res["f1"])
+
+    f1_score = np.mean(batchs_f1, axis=0)
+
+    return {
+        'labels': labels,
+        "predictions": predictions,
+        "f1": f1_score
     }

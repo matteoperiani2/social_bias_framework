@@ -7,37 +7,33 @@ from .config import CONFIG
 rouge_metric = Rouge()
 
 def evaluate_predictions(tokenizer, predictions, labels):
-    class_labels = reshape_tokens_for_metric(labels["class_labels"])
     class_preds, minority_preds, stereotype_preds = get_predictions(tokenizer, predictions)
+    class_labels = np.asarray(labels["class_labels"]).transpose()
     class_preds = np.asarray(class_preds).transpose()
 
-
-    f1_classifiaction = eval_classification_tokens(tokenizer, class_labels, class_preds)
-    f1_rouge_minority = eval_generation_tokens(labels["minority_labels"], minority_preds)
-    f1_rouge_stereotype = eval_generation_tokens(labels["stereotype_labels"], stereotype_preds)
+    f1_classifiaction = compute_f1_classification(tokenizer, class_labels, class_preds)
+    f1_rouge_minority = compute_f1_generation(labels["minority_labels"], minority_preds)
+    f1_rouge_stereotype = compute_f1_generation(labels["stereotype_labels"], stereotype_preds)
 
     return {
         "class_f1": f1_classifiaction,
         "rouge_minor": f1_rouge_minority,
         "rouge_strtp": f1_rouge_stereotype
-        # "rouge_minor": [0],
-        # "rouge_strtp": [0]
     }
 
 
-def reshape_tokens_for_metric(tokens):
-    n_class = 5
-    n_lbls = len(tokens)
+def eval_classifications(tokenizer, predictions, labels):
+    preds, _, _ = get_predictions(tokenizer, predictions)
+    lbls = np.asarray(labels["class_labels"]).transpose()
+    preds = np.asarray(preds).transpose()
 
-    class_labels = []
-    for i in range(n_class):
-        for j in range(n_lbls):
-            try:
-                class_labels.append(tokens[j][i])
-            except:
-                class_labels.append(-1)
-    
-    return np.reshape(class_labels, (n_class, n_lbls))
+    f1 = compute_f1_classification(tokenizer, lbls, preds)
+
+    return {
+        'predictions': preds,
+        'labels': lbls,
+        'f1': f1
+    }
 
 
 def get_predictions(tokenizer, predictions):
@@ -94,7 +90,7 @@ def get_predictions(tokenizer, predictions):
     return  class_preds, minority_preds, stereotype_preds
 
 
-def eval_classification_tokens(tokenizer, labels, predictions):
+def compute_f1_classification(tokenizer, labels, predictions):
     f1_scores = []
     for lbls, preds in zip(labels, predictions):
         good_idx = [idx for idx,lbl in enumerate(lbls) if lbl != tokenizer.pad_token_id]
@@ -106,7 +102,7 @@ def eval_classification_tokens(tokenizer, labels, predictions):
     return f1_scores
 
 
-def eval_generation_tokens(labels, predictions):
+def compute_f1_generation(labels, predictions):
     rouge_score = []
     for lbls, preds in zip(labels, predictions):
         if len(lbls) > 0:

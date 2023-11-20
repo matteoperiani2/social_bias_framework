@@ -101,14 +101,15 @@ class Config:
         val_perc=0.1,
         batch_size=8,
         num_epochs=1,
-        learning_rate=1e-5,
+        learning_rate=1e-4,
+        loss_alpha = 0.5,
         scheduler="linear",
         warmup_fraction=0.1,
         accumulation_steps=1,
         gradient_clip = 1.0,
         mixed_precision="fp16",
         log_interval=200,
-        eval_interval = 200,
+        eval_interval = 100000,
         cpu=False
     )
 
