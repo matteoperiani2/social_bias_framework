@@ -1,11 +1,12 @@
 from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
-from transformers import GPT2PreTrainedModel, GPT2Model
+import torch.nn.functional as F
+from transformers import GPT2PreTrainedModel, GPT2LMHeadModel
 from transformers.utils import ModelOutput
 
 
-class GPT2DoubleHeadsModelOutput(ModelOutput):
+class GPT2ClassificationHeadOutput(ModelOutput):
     """
     Base class for outputs of models predicting if two sentences are consecutive or not.
 
@@ -38,7 +39,7 @@ class GPT2DoubleHeadsModelOutput(ModelOutput):
     """
     
     lm_logits: torch.FloatTensor = None
-    clssf_logits: torch.FloatTensor = None
+    cls_logits: torch.FloatTensor = None
     past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
@@ -48,13 +49,16 @@ class GPT2WithClassificationHead(GPT2PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.gpt2 = GPT2Model(config)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        gpt2_lm = GPT2LMHeadModel.from_pretrained('distilgpt2')
+        self.gpt2 = gpt2_lm.transformer
+        self.lm_head = gpt2_lm.lm_head
+
+        # reweight hidden_state
+        self.hidden_states_attn = nn.Linear(768, 1)
         
-        self.classifiers = []
-        # classification heads 
-        for i in range(5):
-            self.classifiers.append(nn.Linear(768, 1, bias=True))
+        # classification heads
+        # self.fc_gelu = torch.nn.GELU(nn.Linear(768, 768))
+        self.classifiers = nn.Linear(768, 5, bias=True)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -75,7 +79,7 @@ class GPT2WithClassificationHead(GPT2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         **kwargs,
-    ) -> Union[Tuple, GPT2DoubleHeadsModelOutput]:
+    ) -> Union[Tuple, GPT2ClassificationHeadOutput]:
         r"""
         mc_token_ids (`torch.LongTensor` of shape `(batch_size, num_choices)`, *optional*, default to index of the last token of the input):
             Index of the classification token in each input sequence. Selected in the range `[0, input_ids.size(-1) -
@@ -105,21 +109,25 @@ class GPT2WithClassificationHead(GPT2PreTrainedModel):
             return_dict=return_dict,
         )
 
-        hidden_states = gpt2_outputs[0]
+        hidden_states = gpt2_outputs[0] #(B,S,768)
+        hidden_states_weight = F.softmax(self.hidden_states_attn(hidden_states), dim=-2) # (B, S, 1)
+
+        pooled_hidden_states = torch.sum(hidden_states * hidden_states_weight, dim=-2) # (B, 768)
+        cls_logits = self.classifiers(pooled_hidden_states) # (B,5)
 
         lm_logits = self.lm_head(hidden_states)
 
-        clssf_logits = []
-        for i in range(5):
-            clssf_logits.append(self.classifiers[i](hidden_states[:, -1, :]).squeeze(-1))
-
         if not return_dict:
-            return (lm_logits, clssf_logits) + gpt2_outputs[1:]
+            return (lm_logits, cls_logits) + gpt2_outputs[1:]
 
-        return GPT2DoubleHeadsModelOutput(
+        return GPT2ClassificationHeadOutput(
             lm_logits=lm_logits,
-            clssf_logits=clssf_logits,
+            cls_logits=cls_logits,
             past_key_values=gpt2_outputs.past_key_values,
             hidden_states=gpt2_outputs.hidden_states,
             attentions=gpt2_outputs.attentions,
         )
+    
+
+    def resize_token_embeddings(self, new_tokens):
+        self.gpt2.resize_token_embeddings(new_tokens)

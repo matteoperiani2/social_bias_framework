@@ -1,4 +1,5 @@
 import os
+import random
 import wandb
 
 import torch
@@ -6,41 +7,35 @@ from transformers import set_seed
 
 from src.config import CONFIG
 from src.dataset import SBICDataset
+# from src.dataset_prompt import SBICDataset
 from src.train_utils import *
+from src.utils import fix_reproducibility
 
 wandb.login()
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 
 with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
     config = wandb.config
-
-    set_seed(config.seed)
+    fix_reproducibility(config.seed)
 
     # Make the model
-    tokenizer = make_tokinzer(config)
-    model = make_model(config, tokenizer)
+    tokenizer = make_tokinzer(config, add_special_tokens=True)
+    model = make_model(config, tokenizer, init_new_tokens=True)
+    # tokenizer = make_tokinzer(config, cross_attn=False, add_special_tokens=True)
+    # model = make_model(config, tokenizer, add_cross_attn=False, add_special_tokens=True)
 
     # Make the data
     train_data = get_data("train")
     val_data = get_data("validation")
     
-    # if config.train_perc != 1 or config.val_perc != 1:
-    #     train_size = int((config.train_perc * len(train_data)) / config.batch_size) * config.batch_size
-    #     val_size = int((config.val_perc * len(val_data)) / config.batch_size) * config.batch_size
-    #     train_idxs = np.random.choice(train_data.shape[0], train_size, replace=False)
-    #     val_idxs = np.random.choice(val_data.shape[0], val_size, replace=False)
-        
-    #     train_data = train_data[train_idxs]
-    #     val_data = val_data[val_idxs]
-
-    train_data = get_data("train")[:10832]
-    val_data = get_data("validation")[:1000]
-
+    # train_data = np.array(random.choices(train_data, k=10832))
+    val_data = np.array(random.choices(val_data, k=2048))
+    
     train_dataset = SBICDataset(train_data, tokenizer)
     val_dataset = SBICDataset(val_data, tokenizer)
 
-    train_dataloader = make_dataloader(train_dataset, model, tokenizer, config, split="train")
-    val_dataloader = make_dataloader(val_dataset, model, tokenizer, config, split="validation")
+    train_dataloader = make_dataloader(train_dataset, model, tokenizer, config)
+    val_dataloader = make_dataloader(val_dataset, model, tokenizer, config, shuffle=False)
 
     # Make the loss, the optimizer and the scheduler
     optimizer = make_optimizer(model, config)
@@ -54,11 +49,10 @@ with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
         val_dataloader,
         optimizer,
         scheduler,
-        config, 
-        monitor=False
+        config
     )
 
-    torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_10832_{config.num_epochs}_ce.pt")
+torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_full_init.pt")
 
 gc.collect()
 torch.cuda.empty_cache()

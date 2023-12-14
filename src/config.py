@@ -53,14 +53,14 @@ class Config:
             "additional_special_tokens": [
                 "<|offY|>",
                 "<|offN|>",
-                "<|sexY|>",
-                "<|sexN|>",
                 "<|intY|>",
                 "<|intN|>",
+                "<|sexY|>",
+                "<|sexN|>",
                 "<|grpY|>",
                 "<|grpN|>",
-                "<|ingrpN|>",
                 "<|ingrpY|>",
+                "<|ingrpN|>",
             ],
         }
 
@@ -83,7 +83,7 @@ class Config:
     class WandbConfig:
         """Specify the parameters of `wandb.init`"""
 
-        project: str = "project"
+        project: str = "social_bias_framework"
         entity: str = "matteoperiani"
         
     dataset: Dataset = Dataset()
@@ -97,19 +97,16 @@ class Config:
         checkpoint_name="distilgpt2",
         model_name="distilgpt2",
         padding_side="left",
-        train_perc=0.1,
-        val_perc=0.1,
         batch_size=8,
         num_epochs=1,
-        learning_rate=1e-4,
-        loss_alpha = 0.5,
+        learning_rate=1e-5,
         scheduler="linear",
-        warmup_fraction=0.1,
+        warmup_fraction=0.2,
         accumulation_steps=1,
         gradient_clip = 1.0,
         mixed_precision="fp16",
         log_interval=200,
-        eval_interval = 100000,
+        eval_interval = 100,
         cpu=False
     )
 

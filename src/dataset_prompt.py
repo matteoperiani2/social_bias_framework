@@ -13,7 +13,7 @@ class SBICDataset(Dataset):
         super(SBICDataset).__init__()
         self.data = data #numpy array
         self.tokenizer = tokenizer
-        self.labels_encoder = CONFIG.utils.label_encoder
+        self.labels_encoder = {0: 'no', 1:'yes', 2: ''}
         self.max_length = max_sequence_length if max_sequence_length is not None else tokenizer.model_max_length
         self.is_training = is_training
 
@@ -31,70 +31,39 @@ class SBICDataset(Dataset):
         mionority = row[5]
         stereotype = row[6]
 
-        # INPUT: post <|sep|> offY/N intY/N sexY/N [grpY/N] <|sep|> minority <|sep|> stereotype <|sep|> ingrpY/N
+        # PROMPT
+        # post: post
+        # offensive: yes/no
+        # intentional: yes/no
+        # sex: yes/no
+        # group: yes/no
 
-        input_str = post + self.tokenizer.sep_token # post <|sep|>
+        input_prompt = 'post: ' + post + '\n'
 
-        class_features_enc = [self.labels_encoder[idx][val] for idx,val in enumerate(class_features)]
-        
-        if self.is_training:
+        label_prompt = f'offensive: {self.labels_encoder[class_features[0]]}\n'
+        label_prompt += f'intentional: {self.labels_encoder[class_features[1]]}\n'
+        label_prompt += f'sex: {self.labels_encoder[class_features[2]]}\n'
+        label_prompt += f'group: {self.labels_encoder[class_features[3]]}\n'
+        label_prompt += f'in-group: {self.labels_encoder[class_features[4]]}\n'
+        label_prompt += f'minority: {mionority}\n'
+        label_prompt += f'stereotype: {stereotype}\n'
+    
+        inputs = self.tokenizer(
+            text=input_prompt,
+            text_pair=label_prompt,
+            truncation="only_first",
+            max_length=self.max_length,
+        )
 
-            label_str = "".join(class_features_enc[:4]) + self.tokenizer.sep_token
-            
-            # generative_labels = []
-            if mionority != "" and   stereotype!= "":
-                label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  # minority <|sep|> stereotype <|sep|>
-                # generative_labels =  self.tokenizer(
-                #     mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token # minority <|sep|> stereotype <|sep|>
-                # )['input_ids']
+        labels = self.tokenizer.encode(label_prompt)
+        labels.append(self.tokenizer.eos_token_id)
 
-            # offY/N intY/N sexY/N grpY/N <|sep|>
-            # class_labels_enc = self.tokenizer("".join(class_features_enc))['input_ids']
-            # classification_labels = [class_labels_enc[i] if class_labels_enc[i] != self.tokenizer.pad_token_id else -100 for i in range(4)] + [-100] # off int sex group pad_sep
-            # classification_labels += [-100]*len(generative_labels) # pad the generative token
-            # classification_labels += [class_labels_enc[-1]] if class_labels_enc[-1] != self.tokenizer.pad_token_id else [-100] # ingrp
-            # classification_labels += [-100] # eos
-
-            # # structure_labels = [-100]*4 + [self.tokenizer.sep_token_id]
-            # # if len(generative_labels) > 0:
-            # #     structure_labels += [-100]*(len(generative_labels))
-            # # structure_labels += [-100, self.tokenizer.eos_token_id]
-            
-            label_str += class_features_enc[-1] # ingrpY/N
-            # generative_labels = [-100]*4 + [self.tokenizer.sep_token_id] + generative_labels # prepend 5 pad for classification tokens and 1 for sep
-            # generative_labels += [-100, self.tokenizer.eos_token_id] # add pad_ingrps pad_eos
-
-            # input encoding
-            input_ids = self.tokenizer.encode(
-                text=input_str,
-                text_pair=label_str,
-                truncation="only_first",
-                max_length=self.max_length,
-            )
-            attention_mask = np.ones_like(input_ids, dtype=np.uint8)
-            # attention_mask[np.asarray(input_ids) == self.tokenizer.pad_token_id] = 0
-
-            # output encoding
-            labels = self.tokenizer.encode(text=label_str)
-            labels.append(self.tokenizer.eos_token_id)
-            labels = [-100 if token == self.tokenizer.pad_token_id else token for token in labels]
-
-            return {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask.tolist(),
-                "labels": labels,
-                # "classification_labels": classification_labels,
-                # "generative_labels": generative_labels
-            }
-        else:
-            return {
-                "input_ids": self.tokenizer.encode(input_str),
-                "class_labels": self.tokenizer(''.join(class_features_enc))["input_ids"],
-                "minority_labels": mionority,
-                "stereotype_labels": stereotype
-            }
-
-
+        return {
+            "input_ids": inputs['input_ids'],
+            "attention_mask": inputs['attention_mask'],
+            "labels": labels
+        }
+    
 
 class SBICDataCollator(transformers.DataCollatorForSeq2Seq):
     """
@@ -142,29 +111,24 @@ class SBICDataCollator(transformers.DataCollatorForSeq2Seq):
         if return_tensors is None:
             return_tensors = self.return_tensors
 
-        # labels_present = "classification_labels" in features[0].keys() | 
         max_ids_len = max([len(feature["input_ids"]) for feature in features])
         max_labels_len = max([len(feature["labels"]) for feature in features]) if "labels" in features[0].keys() else -1
         max_pad_length = max_ids_len if max_ids_len > max_labels_len else max_labels_len
 
         if max_labels_len != -1:
             padding_side = self.tokenizer.padding_side
-            present_labels = list(features[0].keys())[2:]
             for feature in features:
-                remainder = [self.label_pad_token_id] * (max_pad_length - len(feature[present_labels[0]]))
-                if isinstance(feature[present_labels[0]], list):
-                    for label in present_labels:   
-                        feature[label] = (
-                            feature[label] + remainder if padding_side == "right" else remainder + feature[label]
-                        )
+                remainder = [self.label_pad_token_id] * (max_pad_length - len(feature["labels"]))
+                if isinstance(feature["labels"], list):
+                    feature["labels"] = (
+                        feature["labels"] + remainder if padding_side == "right" else remainder + feature["labels"]
+                    )
                 elif padding_side == "right":
-                    for label in present_labels:
-                        feature[label] = np.concatenate([feature[label], remainder]).astype(np.int32)
+                    feature["labels"] = np.concatenate([feature["labels"], remainder]).astype(np.int32)
                 else:
-                    for label in present_labels:
-                        feature[label] = np.concatenate([remainder, feature[label]]).astype(np.int32)
+                    feature["labels"] = np.concatenate([remainder, feature["labels"]]).astype(np.int32)
 
-        if 'attention_mask' in features[0].keys():
+        if 'labels' in features[0].keys():
             features = self.tokenizer.pad(
                 features,
                 padding=self.padding,
@@ -179,6 +143,5 @@ class SBICDataCollator(transformers.DataCollatorForSeq2Seq):
                 max_length=self.max_length,
                 pad_to_multiple_of=self.pad_to_multiple_of,
             )
-
 
         return features

@@ -2,11 +2,14 @@ from typing import List
 import random
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 from collections import Counter, defaultdict
 import os
 import torch
 from transformers import AutoTokenizer, AutoModel
 from torch.utils.data import DataLoader
+from nltk.corpus import stopwords
 
 from .config import Config
 
@@ -25,6 +28,19 @@ class DummyScheduler:
     def state_dict(self):
         return {}
 
+
+def fix_reproducibility(seed):
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':16:8'
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+
+
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -36,8 +52,8 @@ def create_reproducible_dataloader(*args, **kwargs):
     return DataLoader(
         *args,
         **kwargs,
-        #   worker_init_fn=seed_worker,
-        #   generator=generator
+          worker_init_fn=seed_worker,
+          generator=generator
     )
 
 def data_aggregator(splits:List):
@@ -142,10 +158,140 @@ def get_minorities_embedding(df:pd.DataFrame):
     return min_counter, min_emb
 
 
-def print_evaluation_results(split, res):
-    annotation_type = ["Offensive", "Intent", "Sex", "Group", "In-Group"]
-    print(f"Classification F1 on {split} set: avg={np.mean(res['clasification_f1_score']):.3f}")
-    for type, score in zip(annotation_type, res['clasification_f1_score']):
-        print(f" - {type}: {score:.3f}")
-    print(f"Minority RougeL-f1 on {split} set: {res['minority_rouge_f1_score']:.3f}")
-    print(f"Stereotype RougeL-f1 on {split} set: {res['stereotype_rouge_f1_score']:.3f}")
+
+def print_classification_results(tokenizer, labels, predictions, f1_scores, show_cm = True):
+    annotation_type = ["Offensive", "Intentional", "Sex/Lewd content", "Group targetted", "Speaker in group"]
+
+    for type, score in zip(annotation_type, f1_scores):
+        print(f"{type}: {score:.3f}")
+
+    if show_cm:
+        plt.rcParams['font.size'] = '12'
+        _, axs = plt.subplots(1, 5, figsize=(35, 15))
+        for j in range(5):
+            lbl = tokenizer.batch_decode(np.unique(np.concatenate((predictions[j],labels[j]))))
+            cm = confusion_matrix(labels[j], predictions[j])
+            cm_disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=lbl)
+            cm_disp.plot(ax=axs[j], cmap='Blues',values_format='0.2f', colorbar=False, xticks_rotation=90)
+            axs[j].set_title(f"{annotation_type[j]}")
+            axs[j].set(xlabel=None)
+            axs[j].set(ylabel=None)
+        plt.show()
+
+
+def print_generations_results(f1_minorities, f1_stereotypes, min_labels, min_pred, sterotype_labels, sterotype_preds, show_dist=True):
+    print(f"Minority Rouge-L F1 score: {f1_minorities:.3f}")
+    print(f"Stereotype Rouge-L F1 score: {f1_stereotypes:.3f}")
+    print()
+    if show_dist:
+        plt.rcParams['font.size'] = '8'
+        plot_minority_distribution(min_pred, min_labels, sterotype_labels, sterotype_preds)
+        plt.show()
+
+
+def plot_minority_distribution(min_pred, min_labels, sterotype_labels, sterotype_preds):
+    type = ['Minority', 'Stereotype']
+    name = ['predictions', 'labels']
+    fig, axes = plt.subplots(1, 4, figsize=(15, 4))
+    for i,(data, ax) in enumerate(zip([min_pred, min_labels, sterotype_labels, sterotype_preds], axes.ravel())):
+        _plot_word_bar(data, ax=ax)
+        ax.set_title(f'{type[i//2]} {name[i%2]}')
+
+    
+def _plot_word_bar(data, ax, n_words=10):
+    if isinstance(data[0], list):
+        topic_words = [
+            y.lower() if y != '' else '\'\'' for x in data for y in x
+        ]
+    else:  
+        topic_words = [
+            x.lower() if x != '' else '\'\'' for x in data
+        ]
+    word_count_dict = dict(Counter(topic_words))
+    popular_words = sorted(word_count_dict, key=word_count_dict.get, reverse=True)
+    popular_words_nonstop = [
+        w for w in popular_words if w not in stopwords.words("english")
+    ]
+    total = sum([word_count_dict[w] for w in reversed(popular_words_nonstop)])
+    ax.barh(
+        range(n_words),
+        [
+            word_count_dict[w] / total
+            for w in reversed(popular_words_nonstop[0:n_words])
+        ],
+    )
+    ax.set_yticks(
+        [x + 0.5 for x in range(n_words)], reversed(popular_words_nonstop[0:n_words])
+    )
+    for i in ax.containers:
+        ax.bar_label(i, padding=2)
+
+
+
+
+
+def get_predictions(tokenizer, predictions):
+    class_preds = []
+    minority_preds = []
+    stereotype_preds = []
+
+    for pred in predictions:
+        sep_idx = np.where(pred == tokenizer.sep_token_id)[0]
+        eos_idx = np.where(pred == tokenizer.eos_token_id)[0]
+
+        # --- get classification tokens --- 
+        cls_preds = []
+        if len(eos_idx) > 0:
+            # concatenate first 4 tokens with the token generated before the eos
+            cls_preds = np.concatenate((pred[:4], [pred[eos_idx[0]-1]]))
+
+        else:
+            # concatenate first 4 tokens with the second-to-last generated token
+            cls_preds = np.concatenate((pred[:4], [pred[-2]]))
+
+        
+
+        # if the model predict not offensive or not to a group, ignore the generation
+        if pred[0] == 0 or pred[3]==0:
+            minority_preds.append([])
+            stereotype_preds.append([])
+            continue
+
+        class_preds.append(cls_preds)
+        
+    
+        # --- get minority and stereotype tokens ---
+        if len(sep_idx) > 0:
+            ## MINORITY
+            if len(sep_idx) > 1: 
+                # select as minority tokens, those tokens that are between first 2 sep
+                minority_preds.append(pred[sep_idx[0]+1:sep_idx[1]])
+
+                ## STEREOTYPE
+                if len(sep_idx) > 2:
+                    # select as stereotype tokens, those tokens that are between the 2nd and the 3rd sep
+                    stereotype_preds.append(pred[sep_idx[1]+1:sep_idx[2]])
+                else:
+                    # select as stereotype tokens, those tokens that are after the 2nd sep
+                    if len(eos_idx) > 0:
+                        stereotype_preds.append(pred[sep_idx[1]+1:eos_idx[0]-1])
+                    else:
+                        stereotype_preds.append(pred[sep_idx[1]+1:-2])
+            else:
+                # select as minority tokens, those tokens that are after the sep
+                # for stereotypes no tokens are selected
+                if len(eos_idx) > 0:
+                    minority_preds.append(pred[sep_idx[0]+1:eos_idx[0]-1])
+                else:
+                    minority_preds.append(pred[sep_idx[0]+1:-2])
+                stereotype_preds.append([])
+        else:
+            # in the case the output is very bad, we take the generated as  minority and stereotype is empty discarded
+            minority_preds.append(pred[4:-2])
+            stereotype_preds.append([])
+
+
+    minority_preds = tokenizer.batch_decode(minority_preds)
+    stereotype_preds = tokenizer.batch_decode(stereotype_preds)
+
+    return  class_preds, minority_preds, stereotype_preds
