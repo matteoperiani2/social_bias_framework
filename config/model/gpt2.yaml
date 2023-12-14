@@ -1,0 +1,44 @@
+name: gpt2
+checkpoint_name: distilgpt2
+batch_size: 8
+learning_rate: 1e-5
+padding_side: left
+warmup_fraction: 0.2
+checkpoint_interval: 700
+log_interval: 700
+eval_interval: 700
+
+data:
+  processed: data/preproc
+  aggregated: data/aggregated
+  train: data/train
+  prediction: data/predictions
+
+special_tokens:
+  pad_token: <|pad|>
+  sep_token: <|sep|>
+  additional_special_tokens:
+    - <|offY|>
+    - <|offN|>
+    - <|sexY|>
+    - <|sexN|>
+    - <|intY|>
+    - <|intN|>
+    - <|grpY|>
+    - <|grpN|>
+    - <|ingrpN|>
+    - <|ingrpY|>
+
+cls_token_map:
+  - 0: <|offN|>
+    1: <|offY|>
+  - 0: <|intN|>
+    1: <|intY|>
+  - 0: <|sexN|>
+    1: <|sexY|>
+  - 0: <|grpN|>
+    1: <|grpY|>
+    2: <|pad|>
+  - 0: <|ingrpN|>
+    1: <|ingrpY|>
+    2: <|pad|>

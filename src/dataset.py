@@ -1,19 +1,15 @@
 import numpy as np
 from typing import Any, Optional, Union
 from torch.utils.data import Dataset
-import transformers 
-
-from .config import Config
-
-CONFIG: Config = Config()
+import transformers
 
 class SBICDataset(Dataset):
      
-    def __init__(self, data, tokenizer, is_training=True, max_sequence_length=None):
+    def __init__(self, data, tokenizer, cls_token_map, is_training=True, max_sequence_length=None):
         super(SBICDataset).__init__()
         self.data = data #numpy array
         self.tokenizer = tokenizer
-        self.labels_encoder = CONFIG.utils.label_encoder
+        self.cls_token_map = cls_token_map
         self.max_length = max_sequence_length if max_sequence_length is not None else tokenizer.model_max_length
         self.is_training = is_training
 
@@ -25,7 +21,7 @@ class SBICDataset(Dataset):
         post = row[0]
 
         # classification features
-        class_features = np.append(row[1:5], [row[-2]], axis=0)
+        class_features = np.append(row[1:5], [row[-1]], axis=0)
 
         # free-text features
         mionority = row[5]
@@ -35,7 +31,7 @@ class SBICDataset(Dataset):
 
         input_str = post + self.tokenizer.sep_token # post <|sep|>
 
-        class_features_enc = [self.labels_encoder[idx][val] for idx,val in enumerate(class_features)]
+        class_features_enc = [self.cls_token_map[idx][val] for idx,val in enumerate(class_features)]
         
         if self.is_training:
 

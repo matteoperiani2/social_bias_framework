@@ -1,0 +1,26 @@
+data:
+  raw:
+    train: SBIC.v2.trn.csv
+    val: SBIC.v2.dev.csv
+    test: SBIC.v2.tst.csv
+  
+  processed: data/prepoc
+  aggregated: data/aggregated
+  train: data/prepoc
+  prediction: data/predictions
+
+wandb:
+  project: social_bias_framework
+  entity: group_nlp2022
+
+model:
+  num_epochs: 3
+  batch_size: 2
+  val_batch_size: 64
+  generate_batch_size: 32
+  num_workers: 2
+  learning_rate: 1e-5
+  optimizer_name: AdamW
+  scheduler: linear
+  gradient_clip: 1.0
+  mixed_precision: fp16

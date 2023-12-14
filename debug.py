@@ -16,7 +16,7 @@ config=CONFIG.hp
 fix_reproducibility(config.seed)
 
 # Make the model
-tokenizer = make_tokinzer(config, add_special_tokens=True)
+tokenizer = make_tokenizer(config, add_special_tokens=True)
 model = make_model(config, tokenizer, init_new_tokens=False)
 
 restricted_token_ids = [5, 10, 15]  # Replace with your specific token IDs

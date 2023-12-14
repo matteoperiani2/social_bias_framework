@@ -1,3 +1,0 @@
-1. modifica codice e trasforma come CE + aplha * StructureLoss
-2. guarda confusion matrix del classification sul train: se scambia yes con no ok
-3. ripesa alpha e vedi se migliora

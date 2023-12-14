@@ -7,13 +7,10 @@ import torch
 import pandas as pd
 
 from .utils import get_predictions
-from .config import Config
 from .processor import RestrictClassificationTokensProcessor
 
 from sklearn.metrics import f1_score
 from rouge import Rouge
-
-
 
 
 def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):  

@@ -7,15 +7,12 @@ import torch
 import torch.nn as nn
 import warnings 
 
-from collections import deque
 from tqdm import tqdm
 
 import wandb
-import transformers
 from transformers import GPT2LMHeadModel, AutoTokenizer, get_scheduler
 from accelerate import Accelerator
 
-from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
 from .dataset import SBICDataCollator
 # from .dataset_prompt import SBICDataCollator
@@ -23,17 +20,13 @@ from .losses import gpt2_llm_loss
 
 warnings.filterwarnings('ignore') 
 
-CONFIG: Config = Config()
-
-
-def make_tokinzer(config:dict,add_special_tokens=True):
-    # checkpoint = CONFIG.checkpoints.__dict__[config.checkpoint_name]
-    tokenizer = AutoTokenizer.from_pretrained(config.get("checkpoint_name"),
-                                                padding_side=config.padding_side,
-                                                use_fast=True)
+def make_tokenizer(config:dict,add_special_tokens=True):
+    tokenizer = AutoTokenizer.from_pretrained(config['checkpoint_name'],
+                                              padding_side=config['padding_side'],
+                                              use_fast=True)
     
     if add_special_tokens:
-        tokenizer.add_special_tokens(CONFIG.model_params.special_tokens)
+        tokenizer.add_special_tokens(config['special_tokens'])
     else:
         tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
@@ -46,7 +39,7 @@ def make_tokinzer(config:dict,add_special_tokens=True):
 def make_model(config:dict,
                tokenizer:AutoTokenizer,
                init_new_tokens = True):
-    model = GPT2LMHeadModel.from_pretrained(config.get("checkpoint_name"))
+    model = GPT2LMHeadModel.from_pretrained(config['checkpoint_name'])
 
     # init new embedding
     new_tokens = len(tokenizer) - model.config.vocab_size
@@ -83,11 +76,11 @@ def _init_new_tokens_embs(model, new_tokens):
     return model
 
 
-def get_data(split: str, aggregated=False):
+def get_data(split: str, config, aggregated=False):
     if not aggregated:
-        path = os.path.join(CONFIG.dataset.preproc_dir, f"{split}.pkl")
+        path = os.path.join(config['data']['processed'], f"{split}.pkl")
     else:
-        path = os.path.join(CONFIG.dataset.aggregated_dir, f"{split}.pkl")
+        path = os.path.join(config['data']['aggregated'], f"{split}.pkl")
     data = pd.read_pickle(path).to_numpy()
     return data
 
@@ -96,7 +89,7 @@ def make_dataloader(dataset, model, tokenizer, config, shuffle=True):
     data_collator = SBICDataCollator(tokenizer=tokenizer, model=model)
     dataloader = create_reproducible_dataloader(
         dataset,
-        batch_size=config.batch_size,
+        batch_size=config['batch_size'],
         collate_fn=data_collator,
         num_workers=0,
         pin_memory=True,
@@ -107,15 +100,15 @@ def make_dataloader(dataset, model, tokenizer, config, shuffle=True):
 
 
 def make_optimizer(model, config):
-   return torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+   return torch.optim.AdamW(model.parameters(), lr=config['learning_rate'])
 
 
 def make_scheduler(optimizer, steps_per_epoch, config):
-    total_steps = steps_per_epoch * config.num_epochs
-    warmup_steps = int(config.warmup_fraction * total_steps)
+    total_steps = steps_per_epoch * config['num_epochs']
+    warmup_steps = int(config['warmup_fraction'] * total_steps)
     if config.get("scheduler", "none") != "none":
         return get_scheduler(
-            config.scheduler,
+            config['scheduler'],
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
@@ -137,7 +130,7 @@ def train(
     if monitor:
         watch_list = [model]
 
-    accelerator = Accelerator(mixed_precision=config.mixed_precision, cpu=config.cpu)
+    accelerator = Accelerator(mixed_precision=config['mixed_precision'], cpu=config.get('cpu', False))
     (
         model,
         optimizer,
@@ -149,16 +142,16 @@ def train(
     )
 
     if monitor:
-        wandb.watch(watch_list, log="all", log_freq=config.log_interval)
+        wandb.watch(watch_list, log="all", log_freq=config['log_interval'])
 
     # loss_fn = CustomLoss([1.,1.,1.], sep_token=torch.tensor(50258))
     
     forward_signature = set(inspect.signature(model.forward).parameters)
     step = 0
-    max_iters = config.num_epochs * len(train_dataloader)
+    max_iters = config['num_epochs'] * len(train_dataloader)
     print("Training...")
     with tqdm(total=max_iters, unit="batch") as pbar:
-        for epoch in range(config.num_epochs):
+        for epoch in range(config['num_epochs']):
             for data in train_dataloader:
                 pbar.set_description(F"Epoch {epoch}")
                 lr = lr_scheduler.get_last_lr()[0]
@@ -191,7 +184,7 @@ def train(
                               },
                               step=step)
 
-                if (step % config.eval_interval == 0) or max_iters == step:
+                if (step % config['eval_interval'] == 0) or max_iters == step:
                     print(f"Evaluation after the {step} steps...")
                     # Evaluate the model
                     avg_val_loss = _train_evaluation(
@@ -234,11 +227,10 @@ def _train_batch(
     accelerator.backward(loss)
 
     if config.get("gradient_clip", "none") != "none":
-        accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
+        accelerator.clip_grad_norm_(model.parameters(), config['gradient_clip'])
 
-    if step % config.accumulation_steps == 0:
-        optimizer.step()
-        optimizer.zero_grad()
+    optimizer.step()
+    optimizer.zero_grad()
     lr_scheduler.step()
 
     return loss.item()
