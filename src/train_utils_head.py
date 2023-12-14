@@ -7,28 +7,35 @@ import torch
 import torch.nn as nn
 import warnings 
 
+from collections import deque
 from tqdm import tqdm
 
 import wandb
+import transformers
 from transformers import GPT2LMHeadModel, AutoTokenizer, get_scheduler
 from accelerate import Accelerator
 
+from .config import Config
 from .utils import create_reproducible_dataloader, DummyScheduler
-from .dataset import SBICDataCollator
+from .dataset_cls_head import SBICDataCollator
 # from .dataset_prompt import SBICDataCollator
-from .losses import gpt2_llm_loss
+from .losses import CustomLoss, gpt2_llm_loss, classification_loss
 
 warnings.filterwarnings('ignore') 
 
-def make_tokenizer(config:dict,add_special_tokens=True):
-    tokenizer = AutoTokenizer.from_pretrained(config['checkpoint_name'],
-                                              padding_side=config['padding_side'],
-                                              use_fast=True)
+CONFIG: Config = Config()
+
+
+def make_tokinzer(config:dict,add_special_tokens=True):
+    # checkpoint = CONFIG.checkpoints.__dict__[config.checkpoint_name]
+    tokenizer = AutoTokenizer.from_pretrained(config.get("checkpoint_name"),
+                                                padding_side=config.padding_side,
+                                                use_fast=True)
     
     if add_special_tokens:
-        tokenizer.add_special_tokens(config['special_tokens'])
+        tokenizer.add_special_tokens(CONFIG.model_params.special_tokens)
     else:
-        tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
+        tokenizer.add_special_tokens({"pad_token": "<|pad|>", "sep_token": "<|sep|>"})
 
     print("List of all special token and its token_id:")
     print(" -", tokenizer.all_special_tokens)
@@ -39,7 +46,7 @@ def make_tokenizer(config:dict,add_special_tokens=True):
 def make_model(config:dict,
                tokenizer:AutoTokenizer,
                init_new_tokens = True):
-    model = GPT2LMHeadModel.from_pretrained(config['checkpoint_name'])
+    model = GPT2LMHeadModel.from_pretrained(config.get("checkpoint_name"))
 
     # init new embedding
     new_tokens = len(tokenizer) - model.config.vocab_size
@@ -66,9 +73,6 @@ def _init_new_tokens_embs(model, new_tokens):
     n = pre_expansion_embeddings.size()[0]
     sigma = ((pre_expansion_embeddings - mu).T @ (pre_expansion_embeddings - mu)) / n
     dist = torch.distributions.multivariate_normal.MultivariateNormal(mu, covariance_matrix=1e-5*sigma)
-    # pad_embedding = (torch.ones_like(mu)*torch.finfo(torch.float16).min).unsqueeze(0) # (1, 768)
-    # other_embes = torch.stack(tuple(dist.sample() for _ in range(new_tokens-1)), dim=0) # (11,768)
-    # new_embeddings = torch.cat((pad_embedding,other_embes ), dim=0) # (12, 768)
     new_embeddings = torch.stack(tuple((dist.sample() for _ in range(new_tokens))), dim=0)
     embeddings[-new_tokens:,:] = new_embeddings
     params['transformer.wte.weight'][-new_tokens:,:] = new_embeddings
@@ -76,11 +80,11 @@ def _init_new_tokens_embs(model, new_tokens):
     return model
 
 
-def get_data(split: str, config, aggregated=False):
+def get_data(split: str, aggregated=False):
     if not aggregated:
-        path = os.path.join(config['data']['processed'], f"{split}.pkl")
+        path = os.path.join(CONFIG.dataset.preproc_dir, f"{split}.pkl")
     else:
-        path = os.path.join(config['data']['aggregated'], f"{split}.pkl")
+        path = os.path.join(CONFIG.dataset.aggregated_dir, f"{split}.pkl")
     data = pd.read_pickle(path).to_numpy()
     return data
 
@@ -89,7 +93,7 @@ def make_dataloader(dataset, model, tokenizer, config, shuffle=True):
     data_collator = SBICDataCollator(tokenizer=tokenizer, model=model)
     dataloader = create_reproducible_dataloader(
         dataset,
-        batch_size=config['batch_size'],
+        batch_size=config.batch_size,
         collate_fn=data_collator,
         num_workers=0,
         pin_memory=True,
@@ -100,15 +104,15 @@ def make_dataloader(dataset, model, tokenizer, config, shuffle=True):
 
 
 def make_optimizer(model, config):
-   return torch.optim.AdamW(model.parameters(), lr=config['learning_rate'])
+   return torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 
 
 def make_scheduler(optimizer, steps_per_epoch, config):
-    total_steps = steps_per_epoch * config['num_epochs']
-    warmup_steps = int(config['warmup_fraction'] * total_steps)
+    total_steps = steps_per_epoch * config.num_epochs
+    warmup_steps = int(config.warmup_fraction * total_steps)
     if config.get("scheduler", "none") != "none":
         return get_scheduler(
-            config['scheduler'],
+            config.scheduler,
             optimizer=optimizer,
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
@@ -130,7 +134,7 @@ def train(
     if monitor:
         watch_list = [model]
 
-    accelerator = Accelerator(mixed_precision=config['mixed_precision'], cpu=config.get('cpu', False))
+    accelerator = Accelerator(mixed_precision=config.mixed_precision, cpu=config.cpu)
     (
         model,
         optimizer,
@@ -142,16 +146,22 @@ def train(
     )
 
     if monitor:
-        wandb.watch(watch_list, log="all", log_freq=config['log_interval'])
+        wandb.watch(watch_list, log="all", log_freq=config.log_interval)
 
-    # loss_fn = CustomLoss([1.,1.,1.], sep_token=torch.tensor(50258))
+    loss_fn = CustomLoss([1.,1.,1.], sep_token=torch.tensor(50258))
     
     forward_signature = set(inspect.signature(model.forward).parameters)
     step = 0
-    max_iters = config['num_epochs'] * len(train_dataloader)
+    max_iters = config.num_epochs * len(train_dataloader)
+    # input_loss_dict = {
+    #     'inputs': [],
+    #     'loss': []
+    # }
+    # prob = []
     print("Training...")
     with tqdm(total=max_iters, unit="batch") as pbar:
-        for epoch in range(config['num_epochs']):
+        for epoch in range(config.num_epochs):
+            epoch_loss = 0
             for data in train_dataloader:
                 pbar.set_description(F"Epoch {epoch}")
                 lr = lr_scheduler.get_last_lr()[0]
@@ -162,43 +172,45 @@ def train(
                     if argument in forward_signature
                 }
 
-                loss = _train_batch(
+                loss, split_losses = train_batch(
                     inputs=inputs,
                     data=data,
                     step=step,
                     model=model,
                     optimizer=optimizer,
-                    loss_fn=gpt2_llm_loss,
+                    loss_fn=loss_fn,
                     lr_scheduler=lr_scheduler,
                     accelerator=accelerator,
                     config=config
                 )
 
+                epoch_loss += loss
+
                 step += 1
                 pbar.update(1)
 
                 if monitor:
-                    wandb.log({
-                                "train_loss": loss,
-                                "lr": lr 
-                              },
+                    wandb.log({"train_loss": loss,
+                               'classification_loss': split_losses[0],
+                               'generative_loss': split_losses[1],
+                               "lr": lr },
                               step=step)
 
-                if (step % config['eval_interval'] == 0) or max_iters == step:
+                if (step % config.eval_interval == 0) or max_iters == step:
                     print(f"Evaluation after the {step} steps...")
                     # Evaluate the model
-                    avg_val_loss = _train_evaluation(
+                    val_loss, val_split_losses  = train_evaluation(
                         model,
-                        val_dataloader,
-                        loss_fn=gpt2_llm_loss,
-                        step=step
+                        val_dataloader
                     )
                     model.train()
                     if monitor:
-                        wandb.log({
-                                    'val_loss': avg_val_loss,
-                                  },
+                        wandb.log({'val_loss': val_loss,
+                                   'val_classification_loss': val_split_losses[0],
+                                   'val_generative_loss': val_split_losses[1]},
                                   step=step)
+        
+            print(f"Epoch {epoch}:\tloss={loss:.4f}")
 
     if monitor:
         wandb.unwatch(watch_list)
@@ -207,7 +219,7 @@ def train(
     accelerator.free_memory()
     torch.cuda.empty_cache()
 
-def _train_batch(
+def train_batch(
     inputs,
     data,
     step,
@@ -221,50 +233,49 @@ def _train_batch(
 
     outputs = model(**inputs, return_dict=True)
     
-    # loss, losses = loss_fn(outputs.logits, data["classification_labels"], data["generative_labels"])
-    loss = loss_fn(outputs.logits, data['labels'])
+    gen_loss = gpt2_llm_loss(outputs.lm_logits, data['labels'])
+    cls_loss = classification_loss(outputs.cls_logits, data['cls_labels'])
+
+    loss = cls_loss + gen_loss * 0
 
     accelerator.backward(loss)
 
     if config.get("gradient_clip", "none") != "none":
-        accelerator.clip_grad_norm_(model.parameters(), config['gradient_clip'])
+        accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
 
-    optimizer.step()
-    optimizer.zero_grad()
+    if step % config.accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
     lr_scheduler.step()
 
-    return loss.item()
+    return loss.item(), [cls_loss.item(), gen_loss.item()]
 
 
-def _train_evaluation(
+def train_evaluation(
     model,
     dataloader,
-    loss_fn,
-    step
 ):
     model.eval()
     device = torch.device("cuda")
     forward_signature = set(inspect.signature(model.forward).parameters)
-    avg_tot_loss = 0
+    tot_loss = 0
+    split_losses = []
     model.to(device)
     with torch.no_grad():
-        with tqdm(total=len(dataloader), unit="batch", desc=f'Eval step {step}') as pbar:
-            for data in dataloader:
-                inputs_kwargs = {
-                    argument: value
-                    for argument, value in data.items()
-                    if argument in forward_signature
-                }
+        for data in tqdm(dataloader, leave=False, total=len(dataloader)):
+            inputs_kwargs = {
+                argument: value.to(device)
+                for argument, value in data.items()
+                if argument in forward_signature
+            }
 
-                outputs = model(**inputs_kwargs, return_dict=True)
+            outputs = model(**inputs_kwargs, return_dict=True)
+            gen_loss = gpt2_llm_loss(outputs.lm_logits, data['labels'])
+            cls_los = classification_loss(outputs.cls_logits, data['cls_labels'])
 
-                loss = loss_fn(outputs.logits, data["labels"])
-                # loss, split_loss = loss_fn(outputs.logits, data["classification_labels"], data["generative_labels"])
+            loss = cls_los + gen_loss * 0
 
-                pbar.update(1)
-                avg_tot_loss += loss.item()
-            
-            avg_tot_loss /= len(dataloader)
-            pbar.set_postfix({'avg_val_loss': avg_tot_loss})
+            split_losses.append([cls_los.item(), gen_loss.item()])
+            tot_loss += loss.item()
 
-    return avg_tot_loss
+    return tot_loss/len(dataloader), np.mean(split_losses, axis=0)

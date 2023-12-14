@@ -1,37 +1,32 @@
-import os, random
-import wandb
-import numpy as np
-
+import os
 import torch
-from transformers import set_seed
 
-from src.config import CONFIG
 from src.dataset import SBICDataset
 from src.train_utils import *
+from src.config import Config
+from src.utils import fix_reproducibility
 
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
-set_seed(42)
-# torch.autograd.set_detect_anomaly(True)
+config = Config.load_config(model_name='gpt2')
+config = Config.to_dict(config.model)
+config['seed'] = 42
 
-config = CONFIG.hp
+fix_reproducibility(config['seed'])
 
 # Make the model
-tokenizer = make_tokinzer(config)
+tokenizer = make_tokenizer(config)
 model = make_model(config, tokenizer)
 
 # Make the data
-train_data = get_data("train")[:10832]
-val_data = get_data("validation")[:1024]
+train_data = get_data("train", config)[:10832]
+val_data = get_data("validation",config)[:1024]
 
-train_dataset = SBICDataset(train_data, tokenizer)
-val_dataset = SBICDataset(val_data, tokenizer)
+train_dataset = SBICDataset(train_data, tokenizer, cls_token_map=config['cls_token_map'])
+val_dataset = SBICDataset(val_data, tokenizer, cls_token_map=config['cls_token_map'])
 
-train_dataloader = make_dataloader(train_dataset, model, tokenizer, config, split="train")
-val_dataloader = make_dataloader(val_dataset, model, tokenizer, config, split="validation")
+train_dataloader = make_dataloader(train_dataset, model, tokenizer, config)
+val_dataloader = make_dataloader(val_dataset, model, tokenizer, config, shuffle=False)
 
 # Make the loss, the optimizer and the scheduler
 optimizer = make_optimizer(model, config)

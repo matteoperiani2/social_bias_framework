@@ -1,119 +1,116 @@
+import gc
 import numpy as np
-from rouge import Rouge
+from transformers import LogitsProcessorList
+from transformers.generation import GenerationConfig
+from tqdm import tqdm
+import torch
+import pandas as pd
+
+from .utils import get_predictions
+from .processor import RestrictClassificationTokensProcessor
+
 from sklearn.metrics import f1_score
-
-from .config import CONFIG
-
-rouge_metric = Rouge()
-
-def evaluate_predictions(tokenizer, predictions, labels):
-    class_preds, minority_preds, stereotype_preds = get_predictions(tokenizer, predictions)
-    class_labels = np.asarray(labels["class_labels"]).transpose()
-    class_preds = np.asarray(class_preds).transpose()
-
-    f1_classifiaction = compute_f1_classification(tokenizer, class_labels, class_preds)
-    f1_rouge_minority = compute_f1_generation(labels["minority_labels"], minority_preds)
-    f1_rouge_stereotype = compute_f1_generation(labels["stereotype_labels"], stereotype_preds)
-
-    return {
-        "class_f1": f1_classifiaction,
-        "rouge_minor": f1_rouge_minority,
-        "rouge_strtp": f1_rouge_stereotype
-    }
+from rouge import Rouge
 
 
-def eval_classifications(tokenizer, predictions, labels):
-    preds, _, _ = get_predictions(tokenizer, predictions)
-    lbls = np.asarray(labels["class_labels"]).transpose()
-    preds = np.asarray(preds).transpose()
+def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):  
+    model.eval()
+  
+    clf_labels = np.zeros((len(dataloader)*config.batch_size, 5), dtype=np.int32)
+    clf_preds = np.zeros((len(dataloader)*config.batch_size, 5), dtype=np.int32)
 
-    f1 = compute_f1_classification(tokenizer, lbls, preds)
-
-    return {
-        'predictions': preds,
-        'labels': lbls,
-        'f1': f1
-    }
-
-
-def get_predictions(tokenizer, predictions):
-    class_preds = []
     minority_preds = []
+    minority_labels = []
     stereotype_preds = []
+    stereotype_labels = []
 
-    for pred in predictions:
-        sep_idx = np.where(pred == tokenizer.sep_token_id)[0]
-        eos_idx = np.where(pred == tokenizer.eos_token_id)[0]
+    allowed_tokens = ['<|offY|><|offN|>', '<|intY|><|intN|>', '<|sexY|><|sexN|>', '<|grpY|><|grpN|>']
+    allowed_tokens_ids = tokenizer(allowed_tokens)['input_ids']
 
-        # --- get classification tokens --- 
-        if len(eos_idx) > 0:
-            # concatenate first 4 tokens with the token generated before the eos
-            class_preds.append(np.concatenate((pred[:4], [pred[eos_idx[0]-1]])))
-        else:
-            # concatenate first 4 tokens with the last generated token
-            class_preds.append(np.concatenate((pred[:4], [pred[-1]])))
-    
-        # --- get minority and stereotype tokens ---
-        if len(sep_idx) > 0:
-            ## MINORITY
-            if len(sep_idx) > 1: 
-                # select as minority tokens, those tokens that are between first 2 sep
-                minority_preds.append(pred[sep_idx[0]+1:sep_idx[1]])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    with torch.no_grad():
+        with tqdm(total=len(dataloader), unit="batch", desc=split) as pbar:
+            for idx,data in enumerate(dataloader):
+                inputs = {k: torch.as_tensor(v, device=device) for k,v in data.items() if k in ['input_ids', 'attention_mask']}
 
-                ## STEREOTYPE
-                if len(sep_idx) > 2:
-                    # select as stereotype tokens, those tokens that are between the 2nd and the 3rd sep
-                    stereotype_preds.append(pred[sep_idx[1]+1:sep_idx[2]])
-                else:
-                    # select as stereotype tokens, those tokens that are after the 2nd sep
-                    if len(eos_idx) > 0:
-                        stereotype_preds.append(pred[sep_idx[1]+1:eos_idx[0]-1])
-                    else:
-                        stereotype_preds.append(pred[sep_idx[1]+1:len(pred)-1])
-            else:
-                # select as minority tokens, those tokens that are after the sep
-                # for stereotypes no tokens are selected
-                if len(eos_idx) > 0:
-                    minority_preds.append(pred[sep_idx[0]+1:eos_idx[0]-1])
-                else:
-                    minority_preds.append(pred[sep_idx[0]+1:len(pred)-1])
-                stereotype_preds.append([])
-        else:
-            # in the case the output is very bad, both minority and stereotypes are discarded
-            minority_preds.append([])
-            stereotype_preds.append([])
+                processor = RestrictClassificationTokensProcessor(step_cls_tokens=allowed_tokens_ids,
+                                                                  sep_token_id=tokenizer.sep_token_id)
+                logits_processor = LogitsProcessorList([processor])
+
+                generate_out = model.generate(**inputs,
+                                              generation_config=gen_cfg,
+                                            #   logits_processor=logits_processor
+                )
+                generate_out = generate_out.cpu().numpy()
+                
+                # remove from the output the input prompt and get prediction
+                generate_out = [gen[np.where(gen == tokenizer.sep_token_id)[0][0]+1:] for gen in generate_out]
+                print(generate_out[3])
+                raise
+                
+                gen_clf, gen_minorities, gen_stereotypes = get_predictions(tokenizer, generate_out)
+
+                start_idx = idx*config.batch_size
+                end_idx = start_idx+config.batch_size
+                clf_labels[start_idx:end_idx, ...] = np.asarray(data["class_labels"])
+                clf_preds[start_idx:end_idx, ...] = np.asarray(gen_clf)
+
+                minority_preds.extend(gen_minorities)
+                minority_labels.extend(data["minority_labels"])
+                stereotype_preds.extend(gen_stereotypes)
+                stereotype_labels.extend(data["stereotype_labels"])
+
+                pbar.update(1)
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    returns = {
+        "clf_preds": clf_preds.tolist(),
+        'minority_preds': minority_preds,
+        'stereotype_preds': stereotype_preds,
+        'clf_labels': clf_labels.tolist(),
+        'minority_labels': minority_labels,
+        'stereotype_labels': stereotype_labels
+    }
+
+    return pd.DataFrame.from_dict(returns)
 
 
-    minority_preds = tokenizer.batch_decode(minority_preds)
-    stereotype_preds = tokenizer.batch_decode(stereotype_preds)
+def evaluate_classification(tokenizer, labels, predictions):
+    pad_token = tokenizer.pad_token_id
+    bin_labels = [(max(l[l!=pad_token]), min(l[l!=pad_token])) for l in labels]
 
-    return  class_preds, minority_preds, stereotype_preds
-
-
-def compute_f1_classification(tokenizer, labels, predictions):
     f1_scores = []
-    for lbls, preds in zip(labels, predictions):
-        good_idx = [idx for idx,lbl in enumerate(lbls) if lbl != tokenizer.pad_token_id]
-        f1 = f1_score([lbls[index] for index in good_idx],
-                      [preds[index] for index in good_idx],
-                       zero_division=0,
-                       average="macro")
-        f1_scores.append(np.nan_to_num(f1))
+    for lbls, preds, bin_lbl in zip(labels, predictions, bin_labels):
+        mask_pad_label = lbls != pad_token
+        preds = preds[mask_pad_label]
+        preds = np.where(preds == bin_lbl[1], bin_lbl[1], [bin_lbl[0]])
+        f1 = f1_score(lbls[mask_pad_label],
+                      preds,
+                      pos_label=bin_lbl[1],
+                      average="binary")
+        f1_scores.append(f1)
+
     return f1_scores
 
 
-def compute_f1_generation(labels, predictions):
-    rouge_score = []
+def evaluate_generation(labels, predictions):  
+    rouge_metric = Rouge()
+    rouge_scores = []
     for lbls, preds in zip(labels, predictions):
-        if len(lbls) > 0:
-            if preds != '':
-                lbl_score = []
+        # if post is offensive or it target a group
+        if len(lbls) > 0 or preds != '':
+            # just for can evaluate train set that is not aggregated... REMOVE BEFORE SUBMIT!!!
+            if isinstance(lbls, list):
+                r_scores = []
                 for lbl in lbls:
                     r_score = rouge_metric.get_scores(preds, lbl)[0]["rouge-l"]["f"]
-                    lbl_score.append(r_score)
-
-                rouge_score.append(np.nan_to_num(np.max(lbl_score)))
+                    r_scores.append(r_score)
+                rouge_scores.append(np.nan_to_num(np.max(r_scores)))
             else:
-                rouge_score.append(0.)
-            
-    return rouge_score
+                r_score = rouge_metric.get_scores(preds, lbls)[0]["rouge-l"]["f"]
+                rouge_scores.append(np.nan_to_num(r_score))
+
+    return sum(rouge_scores)/len(rouge_scores)

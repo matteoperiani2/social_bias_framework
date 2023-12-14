@@ -1,21 +1,41 @@
-# %%
-import transformers
-from src.model import *
-from src.losses import *
+import os
+import random
+import torch
+from transformers import LogitsProcessorList
 
-config = transformers.GPT2Config.from_pretrained("distilgpt2")
-config.head_dropout = 0.1
-model = GPT2WithClassificationHead(config=config)
-tokenizer = transformers.AutoTokenizer.from_pretrained("distilgpt2")
+from src.config import CONFIG
+from src.dataset import SBICDataset
+# from src.dataset_prompt import SBICDataset
+from src.train_utils import *
+from src.utils import fix_reproducibility
+from src.processor import RestrictClassificationTokensProcessor
 
-tokenizer.pad_token = tokenizer.eos_token
-post = ["Niggas are all monkey<|endoftext|>", "Niggas are all monkey<|endoftext|>"]
-encoded_post =  [tokenizer.encode(s) for s in post]
+os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 
-input_ids = torch.tensor(encoded_post)
-outputs = model(input_ids)
+config=CONFIG.hp
+fix_reproducibility(config.seed)
 
-c_labels = torch.tensor([[0,1], [0,0],[1,1],[0,1],[0,1]], dtype=float)
-weight = torch.tensor([0.44, 0.6, 0.8, 0.34, 0.41])
-clssf_loss = classification_loss(outputs.clssf_logits, c_labels, torch.ones(5), weight)
-print("end")
+# Make the model
+tokenizer = make_tokenizer(config, add_special_tokens=True)
+model = make_model(config, tokenizer, init_new_tokens=False)
+
+restricted_token_ids = [5, 10, 15]  # Replace with your specific token IDs
+inputs = tokenizer(['Ciao sono Matteo!', 'Ciao Matteo!'], padding=True, return_tensors='pt')
+
+allowed_tokens = ['<|offY|><|offN|>', '<|intY|><|intN|>', '<|sexY|><|sexN|>', '<|grpY|><|grpN|>']
+allowed_tokens_ids = tokenizer(allowed_tokens)['input_ids']
+
+processor = RestrictClassificationTokensProcessor(step_cls_tokens=allowed_tokens_ids, sep_token_id=tokenizer.sep_token_id)
+logits_processor = LogitsProcessorList([processor])
+
+model.generate(**inputs, logits_processor=logits_processor)
+
+processor.gen_token
+
+
+gc.collect()
+torch.cuda.empty_cache()
+
+
+
+

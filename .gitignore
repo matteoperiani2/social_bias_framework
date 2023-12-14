@@ -156,3 +156,4 @@ poetry.lock
 wandb/
 data/
 !data/prediction/
+checkpoints/
