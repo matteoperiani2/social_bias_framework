@@ -13,6 +13,8 @@ wandb:
   project: social_bias_framework
   entity: group_nlp2022
 
+embedding_model: WhereIsAI/UAE-Large-V1
+
 model:
   num_epochs: 3
   batch_size: 2

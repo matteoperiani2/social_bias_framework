@@ -10,52 +10,29 @@ import datasets
 from tqdm import tqdm
 
 import wandb
-from transformers import GPT2LMHeadModel, AutoTokenizer, get_scheduler
+from transformers import get_scheduler
 from accelerate import Accelerator
 
 from .utils import create_reproducible_dataloader, DummyScheduler, init_cross_entropy_weights
-from .dataset import SBICDataCollator
-# from .dataset_prompt import SBICDataCollator
-from .losses import gpt2_llm_loss
-
-warnings.filterwarnings('ignore') 
-
-# data
-#     gpt2
-#         raw:  train, val (not agg)
-#         aggregated: val, test (agg)
-#     enc_dec
-#         train
-#         val
-#         test
+from .helper import GPT2TrainHelper, BartTrainHelper
+import src.models.gpt2 as gpt2
+import src.models.bart as bart
 
 
-def get_data(split, config, aggregated=False):
+def get_model_helper(config):
     if config['name'] == 'gpt2':
-        return _get_gpt2_data(split, config, aggregated)
-    elif config['name'] == 'enc_dec':
-        return _get_enc_dec_data(split, config, aggregated)
-
-def _get_gpt2_data(split, config, aggregated):
-    if not aggregated:
-        path = os.path.join(config['data']['raw'], split)
+        return GPT2TrainHelper(config)
+    elif config['name'] == 'bart':
+        return BartTrainHelper(config)
     else:
-        path = os.path.join(config['data']['aggregated'], split)
-    data = datasets.load_from_disk(path)
-    return data
-
-def _get_enc_dec_data(split, config):
-    path = os.path.join(config['data'], split)
-    data = datasets.load_from_disk(path)
-    return data
+        raise ValueError("Invalid name. Possible values are [gpt2, bart]")
 
 
-def make_dataloader(dataset, model, tokenizer, config, shuffle=True):
-    data_collator = SBICDataCollator(tokenizer=tokenizer, model=model)
+def make_dataloader(dataset, collator, config, shuffle=True):
     dataloader = create_reproducible_dataloader(
         dataset,
         batch_size=config['batch_size'],
-        collate_fn=data_collator,
+        collate_fn=collator,
         num_workers=0,
         pin_memory=True,
         shuffle=shuffle,
@@ -82,13 +59,19 @@ def make_scheduler(optimizer, steps_per_epoch, config):
     return DummyScheduler(optimizer=optimizer)
 
 
+def make_loss(confg):
+    if confg['name'] == 'gpt2':
+        return gpt2.loss
+    elif confg['name'] == 'bart':
+        return bart.loss
+
 def train(
     model: nn.Module,
     train_dataloader: torch.utils.data.DataLoader,
     val_dataloader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
+    loss_fn,
     lr_scheduler,
-    weights,
     config,
     monitor=True,
 ):
@@ -110,8 +93,6 @@ def train(
     if monitor:
         wandb.watch(watch_list, log="all", log_freq=config['log_interval'])
 
-    weights = init_cross_entropy_weights(model.config.vocab_size, config['ce_wights'])
-
     forward_signature = set(inspect.signature(model.forward).parameters)
     step = 0
     max_iters = config['num_epochs'] * len(train_dataloader)
@@ -131,10 +112,9 @@ def train(
                 loss = _train_batch(
                     inputs=inputs,
                     data=data,
-                    weights=weights,
                     model=model,
                     optimizer=optimizer,
-                    loss_fn=gpt2_llm_loss,
+                    loss_fn=loss_fn,
                     lr_scheduler=lr_scheduler,
                     accelerator=accelerator,
                     config=config
@@ -156,7 +136,7 @@ def train(
                     avg_val_loss = _train_evaluation(
                         model,
                         val_dataloader,
-                        loss_fn=gpt2_llm_loss,
+                        loss_fn=loss_fn,
                         step=step
                     )
                     model.train()
@@ -176,7 +156,6 @@ def train(
 def _train_batch(
     inputs,
     data,
-    weights,
     model,
     optimizer,
     loss_fn,
@@ -187,8 +166,7 @@ def _train_batch(
 
     outputs = model(**inputs, return_dict=True)
     
-    # loss, losses = loss_fn(outputs.logits, data["classification_labels"], data["generative_labels"])
-    loss = loss_fn(outputs.logits, data['labels'], data['off_mask'], weights)
+    loss = loss_fn(outputs, data, config)
 
     accelerator.backward(loss)
 
@@ -224,8 +202,7 @@ def _train_evaluation(
 
                 outputs = model(**inputs_kwargs, return_dict=True)
 
-                loss = loss_fn(outputs.logits, data["labels"])
-                # loss, split_loss = loss_fn(outputs.logits, data["classification_labels"], data["generative_labels"])
+                loss =  loss_fn(outputs, data)
 
                 pbar.update(1)
                 avg_tot_loss += loss.item()

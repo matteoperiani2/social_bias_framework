@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from transformers import LogitsProcessor
 
-class RestrictClassificationTokensProcessor(LogitsProcessor):
+class RestrictTokensGenerationProcessor(LogitsProcessor):
     def __init__(self, step_cls_tokens, sep_token_id, eos_token_id, max_length, device):
         self.step_cls_tokens = torch.as_tensor(step_cls_tokens).to(device)
         self.cls_tokens = torch.as_tensor(np.asarray(step_cls_tokens).flatten()).to(device)

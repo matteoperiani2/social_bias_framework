@@ -6,7 +6,7 @@ import torch
 import pandas as pd
 
 from .utils import get_predictions
-from .processor import RestrictClassificationTokensProcessor
+from .processor import RestrictTokensGenerationProcessor
 
 from sklearn.metrics import f1_score
 from rouge import Rouge
@@ -34,7 +34,7 @@ def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):
             for idx,data in enumerate(dataloader):
                 inputs = {k: torch.as_tensor(v, device=device) for k,v in data.items() if k in ['input_ids', 'attention_mask']}
 
-                processor = RestrictClassificationTokensProcessor(step_cls_tokens=allowed_tokens_ids,
+                processor = RestrictTokensGenerationProcessor(step_cls_tokens=allowed_tokens_ids,
                                                                   sep_token_id=tokenizer.sep_token_id, 
                                                                   eos_token_id=tokenizer.eos_token_id,
                                                                   max_length=gen_cfg.max_new_tokens,
@@ -75,18 +75,13 @@ def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):
     return pd.DataFrame.from_dict(returns)
 
 
-def evaluate_classification(tokenizer, labels, predictions):
-    pad_token = tokenizer.pad_token_id
-    bin_labels = [(max(l[l!=pad_token]), min(l[l!=pad_token])) for l in labels]
-
+def evaluate_classification(labels, predictions, pad_token):
     f1_scores = []
-    for lbls, preds, bin_lbl in zip(labels, predictions, bin_labels):
+    for lbls, preds in zip(labels, predictions):
         mask_pad_label = lbls != pad_token
         preds = preds[mask_pad_label]
-        preds = np.where(preds == bin_lbl[1], bin_lbl[1], [bin_lbl[0]])
         f1 = f1_score(lbls[mask_pad_label],
-                      preds,
-                      pos_label=bin_lbl[1],
+                      preds[mask_pad_label],
                       average="binary")
         f1_scores.append(f1)
 
