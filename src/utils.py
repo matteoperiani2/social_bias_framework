@@ -258,70 +258,53 @@ def _plot_word_bar(data, ax, n_words=10):
 
 
 
-
-
-def get_predictions(tokenizer, predictions):
+def get_predictions(tokenizer, predictions, positive_cls_tokens):
     class_preds = []
     minority_preds = []
     stereotype_preds = []
 
+    # remove from the generated the input prompt
+    predictions = [pred[np.where(pred == tokenizer.sep_token_id)[0][0]+1:] for pred in predictions]
+
     for pred in predictions:
         sep_idx = np.where(pred == tokenizer.sep_token_id)[0]
-        eos_idx = np.where(pred == tokenizer.eos_token_id)[0]
+        eos_idx = np.where(pred == tokenizer.eos_token_id)[0][0]
 
         # --- get classification tokens --- 
-        cls_preds = []
-        if len(eos_idx) > 0:
-            # concatenate first 4 tokens with the token generated before the eos
-            cls_preds = np.concatenate((pred[:4], [pred[eos_idx[0]-1]]))
-
-        else:
-            # concatenate first 4 tokens with the second-to-last generated token
-            cls_preds = np.concatenate((pred[:4], [pred[-2]]))
-
-        
+        # concatenate first 4 tokens with the token generated before the eos
+        cls_preds = np.concatenate((pred[:4], [pred[eos_idx-1]]))
+        bin_cls_preds = [int(pred==pos_token) for pred,pos_token in zip(cls_preds, positive_cls_tokens)]
 
         # if the model predict not offensive or not to a group, ignore the generation
-        if pred[0] == 0 or pred[3]==0:
+        if pred[0] == 0 or pred[-2]==0:
+            bin_cls_preds[-2] = 0
+            bin_cls_preds[-1] = 0
+            class_preds.append(bin_cls_preds)
             minority_preds.append([])
             stereotype_preds.append([])
             continue
 
-        class_preds.append(cls_preds)
+        class_preds.append(bin_cls_preds)
         
-    
         # --- get minority and stereotype tokens ---
-        if len(sep_idx) > 0:
-            ## MINORITY
-            if len(sep_idx) > 1: 
-                # select as minority tokens, those tokens that are between first 2 sep
-                minority_preds.append(pred[sep_idx[0]+1:sep_idx[1]])
-
-                ## STEREOTYPE
-                if len(sep_idx) > 2:
-                    # select as stereotype tokens, those tokens that are between the 2nd and the 3rd sep
-                    stereotype_preds.append(pred[sep_idx[1]+1:sep_idx[2]])
-                else:
-                    # select as stereotype tokens, those tokens that are after the 2nd sep
-                    if len(eos_idx) > 0:
-                        stereotype_preds.append(pred[sep_idx[1]+1:eos_idx[0]-1])
-                    else:
-                        stereotype_preds.append(pred[sep_idx[1]+1:-2])
-            else:
-                # select as minority tokens, those tokens that are after the sep
-                # for stereotypes no tokens are selected
-                if len(eos_idx) > 0:
-                    minority_preds.append(pred[sep_idx[0]+1:eos_idx[0]-1])
-                else:
-                    minority_preds.append(pred[sep_idx[0]+1:-2])
-                stereotype_preds.append([])
-        else:
-            # in the case the output is very bad, we take the generated as  minority and stereotype is empty discarded
-            minority_preds.append(pred[4:-2])
+        if len(sep_idx) > 2: # if there are at least 3 sep
+            # select as minority tokens, those tokens that are between first 2 sep
+            minority_preds.append(pred[sep_idx[0]+1:sep_idx[1]])
+            stereotype_preds.append(pred[sep_idx[1]+1:sep_idx[2]])
+        elif len(sep_idx) > 1: # if there are at least 2 sep
+            minority_preds.append(pred[sep_idx[0]+1:sep_idx[1]])
+            stereotype_preds.append(pred[sep_idx[1]+1:-2])
+        else:  # if there is only 1 sep
+            # minority are those tokens betwen sep and second-to-last token
+            # for stereotypes no tokens are selected
+            minority_preds.append(pred[sep_idx[0]+1:eos_idx-2])
             stereotype_preds.append([])
-
 
     minority_preds = tokenizer.batch_decode(minority_preds)
     stereotype_preds = tokenizer.batch_decode(stereotype_preds)
 
     return  class_preds, minority_preds, stereotype_preds
+
+
+def init_cross_entropy_weights(tokenizer, weight_dict):
+    pass 

@@ -1,7 +1,8 @@
 import numpy as np
 from typing import Any, Optional, Union
 from torch.utils.data import Dataset
-import transformers
+from transformers import DataCollatorForSeq2Seq, PreTrainedTokenizerBase
+from transformers.utils import PaddingStrategy
 
 class SBICDataset(Dataset):
      
@@ -36,30 +37,11 @@ class SBICDataset(Dataset):
         if self.is_training:
 
             label_str = "".join(class_features_enc[:4]) + self.tokenizer.sep_token
-            
-            # generative_labels = []
+        
             if mionority != "" and   stereotype!= "":
                 label_str += mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token  # minority <|sep|> stereotype <|sep|>
-                # generative_labels =  self.tokenizer(
-                #     mionority + self.tokenizer.sep_token + stereotype + self.tokenizer.sep_token # minority <|sep|> stereotype <|sep|>
-                # )['input_ids']
-
-            # offY/N intY/N sexY/N grpY/N <|sep|>
-            # class_labels_enc = self.tokenizer("".join(class_features_enc))['input_ids']
-            # classification_labels = [class_labels_enc[i] if class_labels_enc[i] != self.tokenizer.pad_token_id else -100 for i in range(4)] + [-100] # off int sex group pad_sep
-            # classification_labels += [-100]*len(generative_labels) # pad the generative token
-            # classification_labels += [class_labels_enc[-1]] if class_labels_enc[-1] != self.tokenizer.pad_token_id else [-100] # ingrp
-            # classification_labels += [-100] # eos
-
-            # # structure_labels = [-100]*4 + [self.tokenizer.sep_token_id]
-            # # if len(generative_labels) > 0:
-            # #     structure_labels += [-100]*(len(generative_labels))
-            # # structure_labels += [-100, self.tokenizer.eos_token_id]
-            
-            label_str += class_features_enc[-1] # ingrpY/N
-            # generative_labels = [-100]*4 + [self.tokenizer.sep_token_id] + generative_labels # prepend 5 pad for classification tokens and 1 for sep
-            # generative_labels += [-100, self.tokenizer.eos_token_id] # add pad_ingrps pad_eos
-
+                label_str += class_features_enc[-1] # ingrpY/N
+ 
             # input encoding
             input_ids = self.tokenizer.encode(
                 text=input_str,
@@ -68,31 +50,29 @@ class SBICDataset(Dataset):
                 max_length=self.max_length,
             )
             attention_mask = np.ones_like(input_ids, dtype=np.uint8)
-            # attention_mask[np.asarray(input_ids) == self.tokenizer.pad_token_id] = 0
+            attention_mask[np.asarray(input_ids) == self.tokenizer.pad_token_id] = 0
 
             # output encoding
             labels = self.tokenizer.encode(text=label_str)
-            labels.append(self.tokenizer.eos_token_id)
             labels = [-100 if token == self.tokenizer.pad_token_id else token for token in labels]
+            labels[4] = -100
 
             return {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask.tolist(),
                 "labels": labels,
-                # "classification_labels": classification_labels,
-                # "generative_labels": generative_labels
             }
         else:
             return {
-                "input_ids": self.tokenizer.encode(input_str),
-                "class_labels": self.tokenizer(''.join(class_features_enc))["input_ids"],
+                "inputs": self.tokenizer(input_str, truncation=True, max_length=self.max_length),
+                "class_labels": class_features,
                 "minority_labels": mionority,
                 "stereotype_labels": stereotype
             }
 
 
 
-class SBICDataCollator(transformers.DataCollatorForSeq2Seq):
+class SBICDataCollator(DataCollatorForSeq2Seq):
     """
     Data collator that will dynamically pad the inputs received, as well as the labels.
 
@@ -126,9 +106,9 @@ class SBICDataCollator(transformers.DataCollatorForSeq2Seq):
             The type of Tensor to return. Allowable values are "np", "pt" and "tf".
     """
 
-    tokenizer: transformers.PreTrainedTokenizerBase
+    tokenizer: PreTrainedTokenizerBase
     model: Optional[Any] = None
-    padding: Union[bool, str, transformers.utils.PaddingStrategy] = True
+    padding: Union[bool, str, PaddingStrategy] = True
     max_length: Optional[int] = None
     pad_to_multiple_of: Optional[int] = None
     label_pad_token_id: int = -100

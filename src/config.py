@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 class Config:
     class Model:
         gpt2 = "gpt2"
+        enc_dec = 'enc_dec'
 
     model = Model()
 

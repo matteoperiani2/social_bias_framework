@@ -26,8 +26,8 @@ special_tokens:
     - <|intN|>
     - <|grpY|>
     - <|grpN|>
-    - <|ingrpN|>
     - <|ingrpY|>
+    - <|ingrpN|>
 
 cls_token_map:
   - 0: <|offN|>
@@ -42,3 +42,15 @@ cls_token_map:
   - 0: <|ingrpN|>
     1: <|ingrpY|>
     2: <|pad|>
+
+# ce_wights:
+#   50259: 0.2
+#   50260: 0.3
+#   50261: 0.5
+#   50262: 0.4
+#   50263:
+#   50264:
+#   50265:
+#   50266:
+#   50267:
+#   50268:

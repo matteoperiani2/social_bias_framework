@@ -3,7 +3,6 @@ import torch
 
 from src.dataset import SBICDataset
 from src.train_utils import *
-from src.model_utils import make_model_and_tokenizer
 from src.config import Config
 from src.utils import fix_reproducibility
 
@@ -15,8 +14,9 @@ config['seed'] = 42
 
 fix_reproducibility(config['seed'])
 
-# Make the model and the tokenizer
-model, tokenizer = make_model_and_tokenizer(config)
+# Make the model
+tokenizer = make_tokenizer(config)
+model = make_model(config, tokenizer)
 
 # Make the data
 train_data = get_data("train", config)[:10832]
@@ -34,7 +34,6 @@ scheduler = make_scheduler(
     optimizer, steps_per_epoch=len(train_dataloader), config=config
 )
 
-
 train(
     model,
     train_dataloader,
@@ -45,7 +44,7 @@ train(
     monitor=False
 )
 
-torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_10832_{config.num_epochs}_sl2-half.pt")
+# torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_10832_{config.num_epochs}_sl2-half.pt")
 
 gc.collect()
 torch.cuda.empty_cache()

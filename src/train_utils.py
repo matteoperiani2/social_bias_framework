@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import gc
 import inspect
@@ -6,6 +5,7 @@ import os
 import torch
 import torch.nn as nn
 import warnings 
+import datasets
 
 from tqdm import tqdm
 
@@ -13,75 +13,40 @@ import wandb
 from transformers import GPT2LMHeadModel, AutoTokenizer, get_scheduler
 from accelerate import Accelerator
 
-from .utils import create_reproducible_dataloader, DummyScheduler
+from .utils import create_reproducible_dataloader, DummyScheduler, init_cross_entropy_weights
 from .dataset import SBICDataCollator
 # from .dataset_prompt import SBICDataCollator
 from .losses import gpt2_llm_loss
 
 warnings.filterwarnings('ignore') 
 
-def make_tokenizer(config:dict,add_special_tokens=True):
-    tokenizer = AutoTokenizer.from_pretrained(config['checkpoint_name'],
-                                              padding_side=config['padding_side'],
-                                              use_fast=True)
-    
-    if add_special_tokens:
-        tokenizer.add_special_tokens(config['special_tokens'])
-    else:
-        tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
-
-    print("List of all special token and its token_id:")
-    print(" -", tokenizer.all_special_tokens)
-    print(" -",tokenizer(tokenizer.all_special_tokens)["input_ids"])
-    return tokenizer
+# data
+#     gpt2
+#         raw:  train, val (not agg)
+#         aggregated: val, test (agg)
+#     enc_dec
+#         train
+#         val
+#         test
 
 
-def make_model(config:dict,
-               tokenizer:AutoTokenizer,
-               init_new_tokens = True):
-    model = GPT2LMHeadModel.from_pretrained(config['checkpoint_name'])
+def get_data(split, config, aggregated=False):
+    if config['name'] == 'gpt2':
+        return _get_gpt2_data(split, config, aggregated)
+    elif config['name'] == 'enc_dec':
+        return _get_enc_dec_data(split, config, aggregated)
 
-    # init new embedding
-    new_tokens = len(tokenizer) - model.config.vocab_size
-    model.resize_token_embeddings(len(tokenizer))
-    if init_new_tokens:
-        model = _init_new_tokens_embs(model, new_tokens)
-
-    # for name, para in model.named_parameters():
-    #     if 'ln_' in name:
-    #         para.requires_grad = False
-
-    model.config.pad_token_id = tokenizer.pad_token_id
-    model.config.sep_token_id = tokenizer.sep_token_id
-    model.config.eos_token_id = tokenizer.eos_token_id
-
-    return model
-
-
-def _init_new_tokens_embs(model, new_tokens):
-    params = model.state_dict()
-    embeddings = params['transformer.wte.weight']
-    pre_expansion_embeddings = embeddings[:-new_tokens,:]
-    mu = torch.mean(pre_expansion_embeddings, dim=0)
-    n = pre_expansion_embeddings.size()[0]
-    sigma = ((pre_expansion_embeddings - mu).T @ (pre_expansion_embeddings - mu)) / n
-    dist = torch.distributions.multivariate_normal.MultivariateNormal(mu, covariance_matrix=1e-5*sigma)
-    # pad_embedding = (torch.ones_like(mu)*torch.finfo(torch.float16).min).unsqueeze(0) # (1, 768)
-    # other_embes = torch.stack(tuple(dist.sample() for _ in range(new_tokens-1)), dim=0) # (11,768)
-    # new_embeddings = torch.cat((pad_embedding,other_embes ), dim=0) # (12, 768)
-    new_embeddings = torch.stack(tuple((dist.sample() for _ in range(new_tokens))), dim=0)
-    embeddings[-new_tokens:,:] = new_embeddings
-    params['transformer.wte.weight'][-new_tokens:,:] = new_embeddings
-    model.load_state_dict(params)
-    return model
-
-
-def get_data(split: str, config, aggregated=False):
+def _get_gpt2_data(split, config, aggregated):
     if not aggregated:
-        path = os.path.join(config['data']['processed'], f"{split}.pkl")
+        path = os.path.join(config['data']['raw'], split)
     else:
-        path = os.path.join(config['data']['aggregated'], f"{split}.pkl")
-    data = pd.read_pickle(path).to_numpy()
+        path = os.path.join(config['data']['aggregated'], split)
+    data = datasets.load_from_disk(path)
+    return data
+
+def _get_enc_dec_data(split, config):
+    path = os.path.join(config['data'], split)
+    data = datasets.load_from_disk(path)
     return data
 
 
@@ -123,6 +88,7 @@ def train(
     val_dataloader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     lr_scheduler,
+    weights,
     config,
     monitor=True,
 ):
@@ -144,8 +110,8 @@ def train(
     if monitor:
         wandb.watch(watch_list, log="all", log_freq=config['log_interval'])
 
-    # loss_fn = CustomLoss([1.,1.,1.], sep_token=torch.tensor(50258))
-    
+    weights = init_cross_entropy_weights(model.config.vocab_size, config['ce_wights'])
+
     forward_signature = set(inspect.signature(model.forward).parameters)
     step = 0
     max_iters = config['num_epochs'] * len(train_dataloader)
@@ -159,13 +125,13 @@ def train(
                 inputs = {
                     argument: value
                     for argument, value in data.items()
-                    if argument in forward_signature
+                    if argument in forward_signature and argument != 'labels'
                 }
 
                 loss = _train_batch(
                     inputs=inputs,
                     data=data,
-                    step=step,
+                    weights=weights,
                     model=model,
                     optimizer=optimizer,
                     loss_fn=gpt2_llm_loss,
@@ -210,7 +176,7 @@ def train(
 def _train_batch(
     inputs,
     data,
-    step,
+    weights,
     model,
     optimizer,
     loss_fn,
@@ -222,7 +188,7 @@ def _train_batch(
     outputs = model(**inputs, return_dict=True)
     
     # loss, losses = loss_fn(outputs.logits, data["classification_labels"], data["generative_labels"])
-    loss = loss_fn(outputs.logits, data['labels'])
+    loss = loss_fn(outputs.logits, data['labels'], data['off_mask'], weights)
 
     accelerator.backward(loss)
 

@@ -1,7 +1,6 @@
 import gc
 import numpy as np
 from transformers import LogitsProcessorList
-from transformers.generation import GenerationConfig
 from tqdm import tqdm
 import torch
 import pandas as pd
@@ -16,16 +15,17 @@ from rouge import Rouge
 def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):  
     model.eval()
   
-    clf_labels = np.zeros((len(dataloader)*config.batch_size, 5), dtype=np.int32)
-    clf_preds = np.zeros((len(dataloader)*config.batch_size, 5), dtype=np.int32)
+    clf_labels = np.zeros((len(dataloader)*config['batch_size'], 5), dtype=np.int32)
+    clf_preds = np.zeros((len(dataloader)*config['batch_size'], 5), dtype=np.int32)
 
     minority_preds = []
     minority_labels = []
     stereotype_preds = []
     stereotype_labels = []
 
-    allowed_tokens = ['<|offY|><|offN|>', '<|intY|><|intN|>', '<|sexY|><|sexN|>', '<|grpY|><|grpN|>']
+    allowed_tokens = ['<|offY|><|offN|>', '<|intY|><|intN|>', '<|sexY|><|sexN|>', '<|grpY|><|grpN|>', '<|ingrpY|><|ingrpN|>']
     allowed_tokens_ids = tokenizer(allowed_tokens)['input_ids']
+    positive_cls_tokens = tokenizer('<|offY|><|intY|><|sexY|><|grpY|><|ingrpY|>')['input_ids']
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -35,24 +35,21 @@ def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):
                 inputs = {k: torch.as_tensor(v, device=device) for k,v in data.items() if k in ['input_ids', 'attention_mask']}
 
                 processor = RestrictClassificationTokensProcessor(step_cls_tokens=allowed_tokens_ids,
-                                                                  sep_token_id=tokenizer.sep_token_id)
+                                                                  sep_token_id=tokenizer.sep_token_id, 
+                                                                  eos_token_id=tokenizer.eos_token_id,
+                                                                  max_length=gen_cfg.max_new_tokens,
+                                                                  device=device)
                 logits_processor = LogitsProcessorList([processor])
 
                 generate_out = model.generate(**inputs,
                                               generation_config=gen_cfg,
-                                            #   logits_processor=logits_processor
+                                              logits_processor=logits_processor
                 )
-                generate_out = generate_out.cpu().numpy()
-                
-                # remove from the output the input prompt and get prediction
-                generate_out = [gen[np.where(gen == tokenizer.sep_token_id)[0][0]+1:] for gen in generate_out]
-                print(generate_out[3])
-                raise
-                
-                gen_clf, gen_minorities, gen_stereotypes = get_predictions(tokenizer, generate_out)
+                generate_out = generate_out.cpu().numpy()                
+                gen_clf, gen_minorities, gen_stereotypes = get_predictions(tokenizer, generate_out, positive_cls_tokens)
 
-                start_idx = idx*config.batch_size
-                end_idx = start_idx+config.batch_size
+                start_idx = idx*config['batch_size']
+                end_idx = start_idx+config['batch_size']
                 clf_labels[start_idx:end_idx, ...] = np.asarray(data["class_labels"])
                 clf_preds[start_idx:end_idx, ...] = np.asarray(gen_clf)
 

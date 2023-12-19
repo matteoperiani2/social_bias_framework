@@ -5,9 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
    
 
-def gpt2_llm_loss(logits, labels):
+def gpt2_llm_loss(logits, labels, off_mask, weights):
     logits = logits.transpose(-1, -2)
-    loss = F.cross_entropy(logits, labels, reduction='none') #(BATCH, SEQ_LEN)
+    loss = F.cross_entropy(logits, labels, reduction='none', weight=weights) #(BATCH, SEQ_LEN)
 
     n_valid_tokens = torch.sum(labels != -100, dim=-1) # (BATCH, ) 
     loss = torch.sum(loss, dim=-1) / torch.clamp(n_valid_tokens, min=1e-7) # (BATCH, )
