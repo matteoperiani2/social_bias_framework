@@ -1,9 +1,10 @@
 data:
   raw:
-    train: SBIC.v2.trn.csv
-    val: SBIC.v2.dev.csv
-    test: SBIC.v2.tst.csv
-  
+    train: data/raw/SBIC.v2.trn.csv
+    val: data/raw/SBIC.v2.dev.csv
+    test: data/raw/SBIC.v2.tst.csv
+
+  clean: data/clean  
   processed: processed
   aggregated: aggregated
   train: train
@@ -29,3 +30,7 @@ model:
   checkpoint_interval: 700
   log_interval: 700
   device: cuda:0
+
+embedding_model: WhereIsAI/UAE-Large-V1
+group_lbl_processor: group-label-processor.pkl
+# embedding_model: sentence-transformers/all-mpnet-base-v2

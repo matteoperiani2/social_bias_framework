@@ -23,3 +23,7 @@ class Config:
             config.merge_with({"model": model_config})
 
         return config
+
+    @staticmethod
+    def to_dict(config: OmegaConf):
+        return OmegaConf.to_container(config)
