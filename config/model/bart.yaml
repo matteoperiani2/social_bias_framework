@@ -9,12 +9,6 @@ checkpoint_interval: 700
 log_interval: 700
 eval_interval: 700
 
-data:
-  processed: data/preproc
-  aggregated: data/aggregated
-  train: data/train
-  prediction: data/predictions
-
 generation_parameters:
   penalty_alpha: 0.4
   top_k: 4

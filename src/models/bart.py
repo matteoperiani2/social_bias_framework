@@ -1,11 +1,14 @@
-from typing import List, Optional, Union, Tuple
-from attr import dataclass
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
-from transformers.models.bart.modeling_bart import shift_tokens_right, BartClassificationHead
+from attr import dataclass
+from transformers.models.bart.modeling_bart import (
+    BartClassificationHead,
+    shift_tokens_right,
+)
 
 
 @dataclass
@@ -71,21 +74,29 @@ class BartSBFOutput(transformers.utils.ModelOutput):
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
 
 
-class BartSBF(transformers.BartPretrainedModel):
+class BartSBF(transformers.BartPreTrainedModel):
     base_model_prefix = "model"
-    _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
+    _tied_weights_keys = [
+        "encoder.embed_tokens.weight",
+        "decoder.embed_tokens.weight",
+        "lm_head.weight",
+    ]
     _keys_to_ignore_on_load_missing = ["lm_logits_bias"]
 
-    def __init__(self, config:transformers.BartConfig, **kwargs):
+    def __init__(self, config: transformers.BartConfig, **kwargs):
         super(BartSBF, self).__init__(config, **kwargs)
         self.model = transformers.BartModel(config)
-        self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
-        self.register_buffer("lm_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
+        self.lm_head = nn.Linear(
+            config.d_model, self.model.shared.num_embeddings, bias=False
+        )
+        self.register_buffer(
+            "lm_logits_bias", torch.zeros((1, self.model.shared.num_embeddings))
+        )
         self.classification_head = BartClassificationHead(
-                    config.d_model,
-                    config.d_model,
-                    config.num_labels,
-                    config.classifier_dropout,
+            config.d_model,
+            config.d_model,
+            config.num_labels,
+            config.classifier_dropout,
         )
 
         self.post_init()
@@ -95,7 +106,7 @@ class BartSBF(transformers.BartPretrainedModel):
 
     def get_decoder(self):
         return self.model.get_decoder()
-    
+
     def get_output_embeddings(self):
         return self.lm_head
 
@@ -121,8 +132,9 @@ class BartSBF(transformers.BartPretrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BartSBFOutput]:
-        
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         if labels is not None:
             use_cache = False
@@ -151,7 +163,7 @@ class BartSBF(transformers.BartPretrainedModel):
 
         ## classification head
         encoder_hidden_states = outputs[2]  # (B, S, E)
-        pooled_outputs = torch.mean(encoder_hidden_states, dim=1) # (B, E)
+        pooled_outputs = torch.mean(encoder_hidden_states, dim=1)  # (B, E)
         cls_logits = self.classification_head(pooled_outputs)
 
         # lm head
@@ -159,8 +171,11 @@ class BartSBF(transformers.BartPretrainedModel):
         lm_logits = lm_logits + self.lm_logits_bias.to(lm_logits.device)
 
         if not return_dict:
-            return (cls_logits, lm_logits,) + outputs[1:]
-        
+            return (
+                cls_logits,
+                lm_logits,
+            ) + outputs[1:]
+
         return BartSBFOutput(
             loss=None,
             cls_logits=cls_logits,
@@ -172,7 +187,7 @@ class BartSBF(transformers.BartPretrainedModel):
             encoder_last_hidden_state=outputs.encoder_last_hidden_state,
             encoder_hidden_states=outputs.encoder_hidden_states,
             encoder_attentions=outputs.encoder_attentions,
-        ) 
+        )
 
     def prepare_inputs_for_generation(
         self,
@@ -214,7 +229,9 @@ class BartSBF(transformers.BartPretrainedModel):
         }
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
-        return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
+        return shift_tokens_right(
+            labels, self.config.pad_token_id, self.config.decoder_start_token_id
+        )
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):
@@ -222,18 +239,21 @@ class BartSBF(transformers.BartPretrainedModel):
         for layer_past in past_key_values:
             # cached cross_attention states don't have to be reordered -> they are always the same
             reordered_past += (
-                tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past[:2])
+                tuple(
+                    past_state.index_select(0, beam_idx.to(past_state.device))
+                    for past_state in layer_past[:2]
+                )
                 + layer_past[2:],
             )
         return reordered_past
-    
+
 
 def loss(outputs, data, weights):
     cls_logits = outputs.cls_logits
     lm_logits = outputs.lm_logits
-    labels = torch.concat(data['cls_labels'], 1-data['cls_labels'], dim=-1)
-    cls_loss = kl_div(F.logsigmoid(cls_logits), labels)
-    lm_loss = F.cross_entropy_with_logits(lm_logits,  data['lm_labels'])
+    labels = torch.concat(data["cls_labels"], 1 - data["cls_labels"], dim=-1)
+    kl_div(F.logsigmoid(cls_logits), labels)
+    F.cross_entropy_with_logits(lm_logits, data["lm_labels"])
 
 
 def kl_div(
@@ -274,9 +294,11 @@ def kl_div(
 
     mask = target != ignore_index
     masked_target = target.clone()
-    masked_target[~mask] = torch.finfo(input.dtype).min if log_target else 0.
+    masked_target[~mask] = torch.finfo(input.dtype).min if log_target else 0.0
 
-    loss = F.kl_div(input=input, target=masked_target, reduction="none", log_target=log_target)
+    loss = F.kl_div(
+        input=input, target=masked_target, reduction="none", log_target=log_target
+    )
 
     if reduction == "none":
         return loss

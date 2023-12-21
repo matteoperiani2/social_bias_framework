@@ -8,12 +8,6 @@ checkpoint_interval: 700
 log_interval: 700
 eval_interval: 700
 
-data:
-  processed: data/preproc
-  aggregated: data/aggregated
-  train: data/train
-  prediction: data/predictions
-
 special_tokens:
   pad_token: <|pad|>
   sep_token: <|sep|>
@@ -38,10 +32,8 @@ cls_token_map:
     1: <|sexY|>
   - 0: <|grpN|>
     1: <|grpY|>
-    2: <|pad|>
   - 0: <|ingrpN|>
     1: <|ingrpY|>
-    2: <|pad|>
 
 
 classification_pos_freq:
