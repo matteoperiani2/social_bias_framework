@@ -1,8 +1,18 @@
 name: gpt2
-checkpoint_name: distilgpt2
-batch_size: 2
+checkpoint_name: gpt2
+batch_size: 8
 learning_rate: 1e-5
 padding_side: left
+warmup_fraction: 0.2
+checkpoint_interval: 700
+log_interval: 700
+eval_interval: 700
+
+data:
+  processed: data/preproc
+  aggregated: data/aggregated
+  train: data/train
+  prediction: data/predictions
 
 special_tokens:
   pad_token: <|pad|>
@@ -16,8 +26,8 @@ special_tokens:
     - <|intN|>
     - <|grpY|>
     - <|grpN|>
+    - <|ingrpY|>
     - <|ingrpN|>
-    - <|ingrpY|>"
 
 cls_token_map:
   - 0: <|offN|>
@@ -32,3 +42,23 @@ cls_token_map:
   - 0: <|ingrpN|>
     1: <|ingrpY|>
     2: <|pad|>
+
+
+classification_pos_freq:
+  offY:  0.579
+  intY: 0.516
+  sexY: 0.091
+  grpY: 0.644
+  ingrpY: 0.087
+
+# ce_wights:
+#   50259: 0.2
+#   50260: 0.3
+#   50261: 0.5
+#   50262: 0.4
+#   50263:
+#   50264:
+#   50265:
+#   50266:
+#   50267:
+#   50268:

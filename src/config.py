@@ -5,11 +5,6 @@ from omegaconf import OmegaConf
 
 
 class Config:
-    class Model:
-        gpt2 = "gpt2"
-
-    model = Model()
-
     @staticmethod
     def load_config(
         config_path="config", config_name="main", model_name: Optional[str] = None
