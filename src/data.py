@@ -8,11 +8,11 @@ import datasets
 import emoji
 import numpy as np
 import regex as re
+from helper import GPT2TrainHelper
+
+from config import Config
 
 from .utils import count_words, flatten, replace_str
-
-classification_cols = ["offensive", "intentional", "sex", "vs_group", "in_group"]
-generative_cols = ["group", "stereotype"]
 
 
 class GroupLabelProcessor:
@@ -231,7 +231,7 @@ def is_annotation_valid(example):
     if example["vs_group"] is None:
         return False
 
-    # of if not vs_group
+    # ok if not vs_group
     if example["vs_group"] == 0.0:
         return True
 
@@ -239,8 +239,8 @@ def is_annotation_valid(example):
     if example["in_group"] is None:
         return False
 
-    # discard if vs_group, but group is null
-    if example["group"] is None:
+    # discard if vs_group, but group is null  or stereotype is null
+    if example["group"] is None or example["stereotype"] is None:
         return False
 
     return True
@@ -278,7 +278,7 @@ def load_raw_data(config):
     return data
 
 
-def rename_data_columns(raw_data):
+def rename_data_columns(raw_data, config):
     data = raw_data.rename_columns(
         {
             "sexYN": "sex",
@@ -294,7 +294,10 @@ def rename_data_columns(raw_data):
     )
     cols = data.column_names["train"]
     relevant_cols = (
-        ["post"] + classification_cols + ["group_category"] + generative_cols
+        ["post"]
+        + config.classification_columns
+        + ["group_category"]
+        + config.generative_columns
     )
     cols = relevant_cols + [col for col in cols if col not in relevant_cols]
     data = data.select_columns(cols)
@@ -314,24 +317,24 @@ def clean_data(config, verbose=True):
         return example
 
     if verbose:
-        print("Loading raw data...")
+        print("Loading raw data ...")
     data = load_raw_data(config)
-    data = rename_data_columns(data)
+    data = rename_data_columns(data, config)
 
     if verbose:
-        print("Removing invalid annotation...")
+        print("Removing invalid annotations ...")
     data = data.filter(is_annotation_valid, num_proc=4)
 
     if verbose:
-        print("Setting features to None...")
+        print("Setting features to None ...")
     data = data.map(set_features_to_null_wrt_rules, num_proc=4)
 
     if verbose:
-        print("Cleaning groups...")
+        print("Cleaning groups ...")
     data = data.map(clean_groups, num_proc=4)
 
     if verbose:
-        print("Saving data to", config.data.clean)
+        print("Saving data to", config.data.clean, "...")
     data.save_to_disk(config.data.clean)
     if verbose:
         print("Complete!")
@@ -412,15 +415,83 @@ def preprocess_data(config, verbose=True):
         return example
 
     if verbose:
-        print("Loading clean data...")
+        print("Loading clean data ...")
     data = datasets.load_from_disk(config.data.clean)
 
     if verbose:
-        print("Preprocessing posts...")
+        print("Preprocessing posts ...")
     data = data.map(_preprocess_post, num_proc=4)
 
     if verbose:
-        print("Saving data to", config.data.processed)
+        print("Saving data to", config.data.processed, "...")
     data.save_to_disk(config.data.processed)
     if verbose:
         print("Complete!")
+
+
+class GPT2DataHelper:
+    def __init__(self, config) -> None:
+        self.config = config
+        helper = GPT2TrainHelper(Config.to_dict(config))
+        self.tokenizer = helper._make_tokenizer()
+
+    def tokenize(self, example: dict):
+        cls_features = []
+        for cls_idx, cls_name in enumerate(self.config.classification_columns):
+            value = example[cls_name]
+            if value is not None:
+                value = int(value > 0.5)  # binarize
+                cls_token = self.config.model.cls_token_map[cls_idx][value]
+            else:
+                cls_token = (
+                    self.tokenizer.pad_token
+                )  # trick: pad token will be ignored by loss
+            cls_features.append(cls_token)
+
+        generative_features = ""
+        if example["group"] is not None:
+            assert example["stereotype"] is not None
+
+            generative_features = (
+                ", ".join(example["group"])
+                + self.tokenizer.sep_token
+                + example["stereotype"]
+                + self.tokenizer.sep_token
+            )
+
+        cls_str = "".join(cls_features[:-1])
+        in_group_token = cls_features[-1] if example["in_group"] is not None else ""
+
+        input_str = example["post"] + self.tokenizer.sep_token
+        label_str = (
+            cls_str + self.tokenizer.sep_token + generative_features + in_group_token
+        )
+
+        input_ids = self.tokenizer(
+            text=input_str,
+            text_pair=label_str,
+            padding=False,
+            truncation="only_first",
+            max_length=self.tokenizer.model_max_length,
+            return_attention_mask=False,
+        )["input_ids"]
+        attention_mask = [
+            0 if token == self.tokenizer.pad_token_id else 1 for token in input_ids
+        ]
+        labels = self.tokenizer(label_str, padding=False, truncation=False)["input_ids"]
+        labels = [
+            -100 if token == self.tokenizer.pad_token_id else token for token in labels
+        ]
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+
+
+def tokenize_data(config):
+    data_helper = GPT2DataHelper(config) if config.model.model_name == "gpt2" else None
+    data = datasets.load_from_disk(config.data.processed)
+    data = data.map(data_helper.tokenize, num_proc=4)
+    data.save_to_disk(config.data.train)

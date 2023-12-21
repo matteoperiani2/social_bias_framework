@@ -7,9 +7,6 @@ data:
   clean: data/clean  
   processed: data/processed
   aggregated: data/aggregated
-  train:
-    gpt2: data/train/gpt2
-    bart: data/train/bart
 
   prediction: prediction
 
@@ -33,3 +30,15 @@ model:
   mixed_precision: fp16
   checkpoint_interval: 700
   log_interval: 700
+
+
+classification_columns:
+  - offensive
+  - intentional
+  - sex
+  - vs_group
+  - in_group
+
+generative_columns:
+  - group
+  - stereotype

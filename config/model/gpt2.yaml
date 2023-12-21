@@ -8,12 +8,6 @@ checkpoint_interval: 700
 log_interval: 700
 eval_interval: 700
 
-data:
-  processed: data/preproc
-  aggregated: data/aggregated
-  train: data/train
-  prediction: data/predictions
-
 special_tokens:
   pad_token: <|pad|>
   sep_token: <|sep|>

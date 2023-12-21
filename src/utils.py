@@ -1,3 +1,4 @@
+import itertools
 from typing import Iterable, List
 
 import pandas as pd
@@ -35,3 +36,24 @@ def count_words(sentence: str):
 
 def batch(data: Iterable, batch_size: int) -> Iterable[Iterable]:
     return BatchSampler(data, batch_size=batch_size, drop_last=False)
+
+
+def batched_function(fn, scalar_output=True):
+    def execute_on_batch(batch):
+        examples = [
+            fn(dict(zip(batch.keys(), values, strict=True)))
+            for values in zip(*batch.values(), strict=True)
+        ]
+
+        if scalar_output:
+            return {
+                key: [example[key] for example in examples]
+                for key in examples[0].keys()
+            }
+
+        return {
+            key: list(itertools.chain(*(example[key] for example in examples)))
+            for key in examples[0].keys()
+        }
+
+    return execute_on_batch
