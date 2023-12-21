@@ -1,7 +1,7 @@
 import math
 import string
 from collections import defaultdict
-from typing import List
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -82,3 +82,30 @@ def print_txt_with_punctuations(
         print("Punctuation:", punctuation)
         print("\n".join(groups))
         print("=" * 20 + "\n")
+
+
+def print_n_items(items: List, n=10, separator: Optional[str] = None, shuffle=False):
+    end = "\n"
+    if separator is not None:
+        end += separator + "\n"
+    n = min(n, len(items))
+    if shuffle:
+        items = np.random.choice(items, size=n, replace=False)
+    for item in items[:n]:
+        print(item, end=end)
+
+
+def print_mapping(
+    items_from, items_to, n=10, separator: Optional[str] = None, shuffle=False
+):
+    items = list(zip(items_from, items_to, strict=True))
+    n = min(n, len(items))
+    if shuffle:
+        indices = np.arange(len(items))
+        indices = np.random.choice(indices, size=n, replace=False)
+        items = np.asarray(items)[indices]
+    for before, after in items[:n]:
+        print("from:\t", before)
+        print("to:\t", after)
+        if separator is not None:
+            print(separator)

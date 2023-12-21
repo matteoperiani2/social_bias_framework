@@ -5,9 +5,12 @@ data:
     test: data/raw/SBIC.v2.tst.csv
 
   clean: data/clean  
-  processed: processed
-  aggregated: aggregated
-  train: train
+  processed: data/processed
+  aggregated: data/aggregated
+  train:
+    gpt2: data/train/gpt2
+    bart: data/train/bart
+
   prediction: prediction
 
 wandb:

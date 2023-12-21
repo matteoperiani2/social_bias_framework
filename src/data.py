@@ -1,10 +1,13 @@
+import codecs
+import html
 import pickle
-import re
 from collections import defaultdict
 from typing import Counter, Dict, Iterable, Optional, Set, Tuple
 
 import datasets
+import emoji
 import numpy as np
+import regex as re
 
 from .utils import count_words, flatten, replace_str
 
@@ -275,7 +278,7 @@ def load_raw_data(config):
     return data
 
 
-def rename_data_columns(raw_data, config):
+def rename_data_columns(raw_data):
     data = raw_data.rename_columns(
         {
             "sexYN": "sex",
@@ -313,7 +316,7 @@ def clean_data(config, verbose=True):
     if verbose:
         print("Loading raw data...")
     data = load_raw_data(config)
-    data = rename_data_columns(data, config)
+    data = rename_data_columns(data)
 
     if verbose:
         print("Removing invalid annotation...")
@@ -336,3 +339,88 @@ def clean_data(config, verbose=True):
 
 def split_group_labels(group: str):
     return re.split(r"[,;]", group)
+
+
+def constains_html_escaped_str(string):
+    if "&" not in string:
+        return False
+
+    return bool(re.search(html._charref.pattern, string))
+
+
+def unescape_html_str(string: str):
+    return html.unescape(string)
+
+
+def contains_links(text: str):
+    """Check if there are links in the text."""
+    url_pattern = re.compile(r"https?://\S+|www\.\S+")
+    return bool(url_pattern.search(text))
+
+
+def remove_links(text: str):
+    """Remove links from the text."""
+    url_pattern = re.compile(r"(?:https?://)[-a-zA-Z0-9@:%._\\+~#?&//=]+")
+    return re.sub(url_pattern, "", text)
+
+
+def decode_unicode_escape_sequences(text):
+    """Convert a string containing Unicode escape sequences to Unicode."""
+    return codecs.decode(text, "unicode_escape")
+
+
+__reddit_RT_at_author_regex = re.compile(r"^\s*RT @\S+:\s*")
+
+
+def starts_with_RT_at_author(text: str):
+    return bool(re.search(__reddit_RT_at_author_regex, text))
+
+
+def remove_RT_at_author(text: str):
+    return re.sub(__reddit_RT_at_author_regex, "", text)
+
+
+__char_map = {
+    r"\p{Cn}": "",  # any invalid unicode char
+    r"[’‘]": "'",
+    "\ufeff": "",
+    r"[”“]": '"',
+    "[—―–─]": "-",
+    "…": "...",
+    "\\'": "'",
+}
+
+
+def preprocess_post(post: str) -> str:
+    pipeline = (
+        unescape_html_str,
+        unescape_html_str,
+        remove_links,
+        emoji.demojize,
+        remove_RT_at_author,
+        lambda txt: replace_str(txt, __char_map),
+        white_space_fix,
+    )
+    for fn in pipeline:
+        post = fn(post)
+    return post
+
+
+def preprocess_data(config, verbose=True):
+    def _preprocess_post(example):
+        example["post"] = preprocess_post(example["post"])
+        return example
+
+    if verbose:
+        print("Loading clean data...")
+    data = datasets.load_from_disk(config.data.clean)
+
+    if verbose:
+        print("Preprocessing posts...")
+    data = data.map(_preprocess_post, num_proc=4)
+
+    if verbose:
+        print("Saving data to", config.data.processed)
+    data.save_to_disk(config.data.processed)
+    if verbose:
+        print("Complete!")

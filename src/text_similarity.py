@@ -8,6 +8,9 @@ from angle_emb import AnglE
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics.pairwise import cosine_similarity
+from tqdm import tqdm
+
+from src.utils import batch
 
 
 class TextSimilarity:
@@ -16,13 +19,18 @@ class TextSimilarity:
             embedding_model_path, pooling_strategy="cls"
         )
 
-    def generate_embeddings(self, sentences: List[str]) -> np.ndarray:
-        embedding_model = self.embedding_model.cuda()
-        vectors = embedding_model.encode(sentences, to_numpy=True)
-
-        del embedding_model
-        gc.collect()
-        torch.cuda.empty_cache()
+    def generate_embeddings(self, sentences: List[str], batch_size=1024) -> np.ndarray:
+        try:
+            embedding_model = self.embedding_model.cuda()
+            batched_vectors = [
+                embedding_model.encode(batched_sentences, to_numpy=True)
+                for batched_sentences in tqdm(batch(sentences, batch_size=batch_size))
+            ]
+            del embedding_model
+        finally:
+            gc.collect()
+            torch.cuda.empty_cache()
+        vectors = np.concatenate(batched_vectors)
 
         return vectors
 
