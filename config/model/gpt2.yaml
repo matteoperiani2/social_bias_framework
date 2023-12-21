@@ -32,10 +32,8 @@ cls_token_map:
     1: <|sexY|>
   - 0: <|grpN|>
     1: <|grpY|>
-    2: <|pad|>
   - 0: <|ingrpN|>
     1: <|ingrpY|>
-    2: <|pad|>
 
 
 classification_pos_freq:

@@ -21,8 +21,8 @@ class GPT2TrainHelper:
         self.loss = None
 
     def make_model_and_tokenizer(self):
-        self.tokenizer = self._make_tokenizer(self.config)
-        self.model = self._make_model(self.tokenizer)
+        self.tokenizer = self.make_tokenizer(self.config)
+        self.model = self.make_model(self.tokenizer)
         return self.model, self.tokenizer
 
     def get_data(self, split, aggregated=False):
@@ -39,7 +39,7 @@ class GPT2TrainHelper:
         self.collator = GPT2DataCollator(tokenizer=self.tokenizer, model=self.model)
         return self.collator
 
-    def _make_tokenizer(self, verbose=False):
+    def make_tokenizer(self, verbose=False):
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             self.config["model"]["checkpoint_name"],
             padding_side=self.config["model"]["padding_side"],
@@ -53,13 +53,13 @@ class GPT2TrainHelper:
 
         return tokenizer
 
-    def _make_model(self, tokenizer):
+    def make_model(self, tokenizer):
         self.model = GPT2SBF.from_pretrained(self.config["model"]["checkpoint_name"])
         # init new embedding
         new_tokens = len(tokenizer) - self.model.config.vocab_size
         self.model.resize_token_embeddings(len(tokenizer))
-        self._init_new_tokens_embeddings(new_tokens)
-        self._init_lm_bias()
+        self.__init_new_tokens_embeddings(new_tokens)
+        self.__init_lm_bias()
 
         self.model.transformer.config.pad_token_id = tokenizer.pad_token_id
         self.model.transformer.config.sep_token_id = tokenizer.sep_token_id
@@ -67,7 +67,7 @@ class GPT2TrainHelper:
 
         return self.model
 
-    def _init_new_tokens_embeddings(self, new_tokens):
+    def __init_new_tokens_embeddings(self, new_tokens):
         params = self.model.state_dict()
         embeddings = params["transformer.wte.weight"]
         pre_expansion_embeddings = embeddings[:-new_tokens, :]
@@ -88,7 +88,7 @@ class GPT2TrainHelper:
         params["transformer.wte.weight"][-new_tokens:, :] = new_embeddings
         self.model.load_state_dict(params)
 
-    def _init_lm_bias(self):
+    def __init_lm_bias(self):
         params = self.model.state_dict()
         lm_bias = params["lm_logits_bias"]
         lm_bias[..., self.tokenizer.pad_token_id] = torch.finfo(torch.float16).min
