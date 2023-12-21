@@ -5,15 +5,17 @@ from src.dataset import SBICDataset
 from src.train_utils import *
 from src.config import Config
 from src.utils import fix_reproducibility
-from src.evaluation import generate_predictions
+from src.evaluation import generate_predictions, evaluate_generation
 
 from transformers import GenerationConfig
 
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 
 config = Config.load_config(model_name='gpt2')
-config = Config.to_dict(config.model)
+config_dict = Config.to_dict(config)
+config_model_dict = Config.to_dict(config.model)
 config['seed'] = 42
+
 
 fix_reproducibility(config['seed'])
 

@@ -22,13 +22,13 @@ class GPT2TrainHelper:
     
     def get_data(self, split, aggregated=False):
         if not aggregated:
-            path = os.path.join(self.config['data']['raw'], split)
+            path = os.path.join(self.config['data']['train'], split)
         else:
-            path = os.path.join(self.config['data']['aggregated'], split)
-        # self.data = datasets.load_from_disk(path)
-        self.data = pd.read_pickle(f'data/preproc/{split}.pkl')
+            path = os.path.join(self.config['data']['evaluation'], split)
+        data = datasets.load_from_disk(path)
+        self.data = data.select_columns(['input_ids', 'attention_mask', 'labels'])
 
-        return self.data.to_numpy()
+        return self.data
     
     def make_collator(self):
         self.collator = GPT2DataCollator(tokenizer=self.tokenizer, model=self.model)

@@ -9,10 +9,8 @@ log_interval: 700
 eval_interval: 700
 
 data:
-  processed: data/preproc
-  aggregated: data/aggregated
-  train: data/train
-  prediction: data/predictions
+  train: data/train/gpt2/
+  evaluation: data/evaluation/gpt2/
 
 special_tokens:
   pad_token: <|pad|>

@@ -7,6 +7,7 @@ import pandas as pd
 
 from .utils import get_predictions
 from .processor import RestrictTokensGenerationProcessor
+from .text_similarity import TextSimilarity
 
 from sklearn.metrics import f1_score
 from rouge import Rouge
@@ -75,34 +76,42 @@ def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):
     return pd.DataFrame.from_dict(returns)
 
 
-def evaluate_classification(labels, predictions, pad_token):
+def evaluate_classification(labels, predictions):
     f1_scores = []
     for lbls, preds in zip(labels, predictions):
-        mask_pad_label = lbls != pad_token
-        preds = preds[mask_pad_label]
-        f1 = f1_score(lbls[mask_pad_label],
-                      preds[mask_pad_label],
+        mask_not_present_labels = lbls != 2
+        preds = preds[mask_not_present_labels]
+        f1 = f1_score(lbls[mask_not_present_labels],
+                      preds[mask_not_present_labels],
                       average="binary")
         f1_scores.append(f1)
 
     return f1_scores
 
 
-def evaluate_generation(labels, predictions):  
+def evaluate_generation(labels, predictions, config):  
     rouge_metric = Rouge()
+    text_similarity = TextSimilarity(config['embedding_model'])
     rouge_scores = []
-    for lbls, preds in zip(labels, predictions):
+    similarity_scores = []
+    for lbls, pred in zip(labels, predictions):
         # if post is offensive or it target a group
-        if len(lbls) > 0 or preds != '':
-            # just for can evaluate train set that is not aggregated... REMOVE BEFORE SUBMIT!!!
-            if isinstance(lbls, list):
+        if len(lbls) > 0:
+            if pred != '':
                 r_scores = []
+                sim_scores = []
                 for lbl in lbls:
-                    r_score = rouge_metric.get_scores(preds, lbl)[0]["rouge-l"]["f"]
+                    r_score = rouge_metric.get_scores(pred, lbl)[0]["rouge-l"]["f"]
+                    s_score = text_similarity.similarity(pred, lbl)
                     r_scores.append(r_score)
-                rouge_scores.append(np.nan_to_num(np.max(r_scores)))
+                    sim_scores.append(s_score)
+                rouge_scores.append(np.nan_to_num(r_scores))
+                similarity_scores.append(sim_scores)
             else:
-                r_score = rouge_metric.get_scores(preds, lbls)[0]["rouge-l"]["f"]
-                rouge_scores.append(np.nan_to_num(r_score))
+                rouge_scores.append(0.)
+                similarity_scores.append(0.)
 
-    return sum(rouge_scores)/len(rouge_scores)
+    return {
+        'rouges': rouge_scores,
+        'similarities': similarity_scores
+    }

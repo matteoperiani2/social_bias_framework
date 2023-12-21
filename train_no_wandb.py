@@ -21,11 +21,8 @@ train_helper = get_model_helper(config)
 model, tokenizer = train_helper.make_model_and_tokenizer()
 
 # Make the data
-train_data = train_helper.get_data("train", config)[:10832]
-val_data = train_helper.get_data("validation",config)[:1024]
-
-train_dataset = SBICDataset(train_data, tokenizer, cls_token_map=config['cls_token_map'])
-val_dataset = SBICDataset(val_data, tokenizer, cls_token_map=config['cls_token_map'])
+train_dataset = train_helper.get_data("train").select(range(10832))
+val_dataset = train_helper.get_data("val").select(range(2048))
 
 collator = train_helper.make_collator()
 
