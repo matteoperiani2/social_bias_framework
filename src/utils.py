@@ -1,3 +1,4 @@
+import inspect
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,6 +11,7 @@ import pandas as pd
 import regex as re
 from datasets import DatasetDict
 from torch.utils.data import BatchSampler
+from .collators import GPT2DataCollator, BartDataCollator
 
 
 def create_dirs_for_file(file_path):
@@ -188,5 +190,19 @@ def process_gpt2_predictions(tokenizer, predictions, positive_cls_tokens):
     return  class_preds, minority_preds, stereotype_preds
 
 
-def init_cross_entropy_weights(tokenizer, weight_dict):
-    pass 
+def pad_batch(inputs, collator):
+    features = [
+        dict(zip(inputs.keys(), values)) for values in zip(*inputs.values())
+    ]
+    features = collator(features)
+
+    return features
+
+def filter_model_inputs(model, inputs):
+    forward_signature = set(inspect.signature(model.forward).parameters)
+    inputs = {
+        argument: value
+        for argument, value in inputs.items()
+        if argument in forward_signature
+    }
+    return inputs

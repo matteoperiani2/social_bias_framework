@@ -9,9 +9,10 @@ import torch.nn.functional as F
 from torch.nn.modules import Embedding
 from tqdm import tqdm
 import transformers
+from transformers import GenerationConfig
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
-from src.utils import process_gpt2_predictions
+from src.utils import process_gpt2_predictions, pad_batch, filter_model_inputs
 from src.processor import RestrictTokensGenerationProcessor
 
 class GPT2SBF(transformers.GPT2PreTrainedModel):
@@ -168,64 +169,67 @@ def loss(outputs, data):
     return loss
 
 
-def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):  
+def generate_predictions(data, model, tokenizer, collator, config):    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
-  
-    clf_labels = np.zeros((len(dataloader)*config['batch_size'], 5), dtype=np.int32)
-    clf_preds = np.zeros((len(dataloader)*config['batch_size'], 5), dtype=np.int32)
+    model.to(device)
 
-    minority_preds = []
-    minority_labels = []
-    stereotype_preds = []
-    stereotype_labels = []
+    data = data.select(range(128))
 
     allowed_tokens = ['<|offY|><|offN|>', '<|intY|><|intN|>', '<|sexY|><|sexN|>', '<|grpY|><|grpN|>', '<|ingrpY|><|ingrpN|>']
-    allowed_tokens_ids = tokenizer(allowed_tokens)['input_ids']
-    positive_cls_tokens = tokenizer('<|offY|><|intY|><|sexY|><|grpY|><|ingrpY|>')['input_ids']
+    cls_tokens = tokenizer(allowed_tokens)['input_ids']
+    pos_cls_tokens = tokenizer('<|offY|><|intY|><|sexY|><|grpY|><|ingrpY|>')['input_ids']
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    params = {
+        'model': model,
+        'tokenizer': tokenizer,
+        'collator': collator,
+        'cls_tokens': cls_tokens,
+        'pos_cls_tokens': pos_cls_tokens,
+        'gen_cfg': config.model.generation_params,
+        'device': device
+    }
+
     with torch.no_grad():
-        with tqdm(total=len(dataloader), unit="batch", desc=split) as pbar:
-            for idx,data in enumerate(dataloader):
-                inputs = {k: torch.as_tensor(v, device=device) for k,v in data.items() if k in ['input_ids', 'attention_mask']}
-
-                processor = RestrictTokensGenerationProcessor(step_cls_tokens=allowed_tokens_ids,
-                                                                  sep_token_id=tokenizer.sep_token_id, 
-                                                                  eos_token_id=tokenizer.eos_token_id,
-                                                                  max_length=gen_cfg.max_new_tokens,
-                                                                  device=device)
-                logits_processor = LogitsProcessorList([processor])
-
-                generate_out = model.generate(**inputs,
-                                              generation_config=gen_cfg,
-                                              logits_processor=logits_processor
-                )
-                generate_out = generate_out.cpu().numpy()                
-                gen_clf, gen_minorities, gen_stereotypes = process_gpt2_predictions(tokenizer, generate_out, positive_cls_tokens)
-
-                start_idx = idx*config['batch_size']
-                end_idx = start_idx+config['batch_size']
-                clf_labels[start_idx:end_idx, ...] = np.asarray(data["class_labels"])
-                clf_preds[start_idx:end_idx, ...] = np.asarray(gen_clf)
-
-                minority_preds.extend(gen_minorities)
-                minority_labels.extend(data["minority_labels"])
-                stereotype_preds.extend(gen_stereotypes)
-                stereotype_labels.extend(data["stereotype_labels"])
-
-                pbar.update(1)
+        predictions = data.map(
+            _generate_batch_predicitons,
+            fn_kwargs=params,
+            batched=True,
+            batch_size = config.model.val_batch_size,
+            remove_columns=['input_ids', 'attention_mask'],
+            load_from_cache_file=False
+        )
 
     gc.collect()
     torch.cuda.empty_cache()
 
-    returns = {
-        "clf_preds": clf_preds.tolist(),
-        'minority_preds': minority_preds,
-        'stereotype_preds': stereotype_preds,
-        'clf_labels': clf_labels.tolist(),
-        'minority_labels': minority_labels,
-        'stereotype_labels': stereotype_labels
+    return predictions
+
+
+def _generate_batch_predicitons(data, model, tokenizer, collator, cls_tokens, pos_cls_tokens, gen_cfg, device):
+    inputs = filter_model_inputs(model, data)
+    inputs = pad_batch(inputs, collator)
+
+    inputs = {k: v.to(device) for k,v in inputs.items()}
+
+    processor = RestrictTokensGenerationProcessor(step_cls_tokens=cls_tokens,
+                                                            sep_token_id=tokenizer.sep_token_id, 
+                                                            eos_token_id=tokenizer.eos_token_id,
+                                                            max_length=gen_cfg.max_new_tokens,
+                                                            device=device)
+    logits_processor = LogitsProcessorList([processor])
+
+    generate_out = model.generate(**inputs,
+                                    logits_processor=logits_processor,
+                                    **gen_cfg
+    )
+
+    generate_out = generate_out.detach().cpu().numpy()                
+    cls_preds, minorities_preds, stereotypes_preds = process_gpt2_predictions(tokenizer, generate_out, pos_cls_tokens)
+
+    return {
+        'cls_preds': cls_preds,
+        'minority_preds': minorities_preds,
+        'stereotype_preds': stereotypes_preds,
     }
 
-    return pd.DataFrame.from_dict(returns)

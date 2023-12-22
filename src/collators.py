@@ -66,23 +66,14 @@ class GPT2DataCollator(DataCollatorForSeq2Seq):
                 else:
                     feature['labels'] = np.concatenate([remainder, feature['labels']]).astype(np.int32)
 
-        # chege return type in the case of training or evaluation
-        if 'labels' in features[0].keys():
-            features = self.tokenizer.pad(
-                features,
-                padding=self.padding,
-                max_length=self.max_length,
-                pad_to_multiple_of=self.pad_to_multiple_of,
-                return_tensors=return_tensors,
-            )
-        else:
-            features = self.tokenizer.pad(
-                features,
-                padding=self.padding,
-                max_length=self.max_length,
-                pad_to_multiple_of=self.pad_to_multiple_of,
-            )
-
+        features = self.tokenizer.pad(
+            features,
+            padding=self.padding,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors=return_tensors,
+        )
+        
         return features
     
 

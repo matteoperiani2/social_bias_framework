@@ -1,6 +1,7 @@
 name: gpt2
 checkpoint_name: gpt2
 batch_size: 8
+val_batch_size: 16
 num_epochs: 1 
 learning_rate: 1e-5
 padding_side: left
@@ -9,7 +10,9 @@ checkpoint_interval: 700
 log_interval: 1000
 eval_interval: 1000
 
+
 checkpoint_dir: checkpoints/gpt2
+
 
 special_tokens:
   pad_token: <|pad|>
@@ -25,6 +28,7 @@ special_tokens:
     - <|grpN|>
     - <|ingrpY|>
     - <|ingrpN|>
+
 
 cls_token_map:
   - 0: <|offN|>
@@ -48,9 +52,9 @@ classification_pos_freq:
 
 
 generation_params:
-  gen_cfg.max_new_tokens: 100
-  gen_cfg.do_sample: False
-  gen_cfg.num_beams: 1
+  max_new_tokens: 100
+  do_sample: False
+  num_beams: 1
 
 # ce_wights:
 #   50259: 0.2
