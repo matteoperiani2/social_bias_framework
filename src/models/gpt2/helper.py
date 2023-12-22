@@ -1,6 +1,6 @@
 import os
 
-import pandas as pd
+import datasets
 import torch
 import transformers
 
@@ -18,20 +18,14 @@ class GPT2Helper(ModelHelper):
         self.collator = None
         self.loss = None
 
-    def make_model_and_tokenizer(self):
-        self.tokenizer = self.make_tokenizer(self.config)
-        self.model = self.make_model(self.tokenizer)
-        return self.model, self.tokenizer
-
     def get_data(self, split, aggregated=False):
         if not aggregated:
-            os.path.join(self.config["data"]["raw"], split)
+            path = os.path.join(self.config["data"]["train"], split)
         else:
-            os.path.join(self.config["data"]["aggregated"], split)
-        # self.data = datasets.load_from_disk(path)
-        self.data = pd.read_pickle(f"data/preproc/{split}.pkl")
+            path = os.path.join(self.config["data"]["eval"], split)
+        self.data = datasets.load_from_disk(path)
 
-        return self.data.to_numpy()
+        return self.data
 
     def make_data_collator(self, tokenizer, model):
         self.collator = GPT2DataCollator(tokenizer=tokenizer, model=model)
@@ -58,7 +52,7 @@ class GPT2Helper(ModelHelper):
         new_tokens = len(self.tokenizer) - self.model.config.vocab_size
         self.model.resize_token_embeddings(len(self.tokenizer))
         self.__init_new_tokens_embeddings(new_tokens)
-        self.__init_lm_bias()
+        # self.__init_lm_bias()
 
         self.model.transformer.config.pad_token_id = self.tokenizer.pad_token_id
         self.model.transformer.config.sep_token_id = self.tokenizer.sep_token_id
@@ -91,7 +85,7 @@ class GPT2Helper(ModelHelper):
         params = self.model.state_dict()
         lm_bias = params["lm_logits_bias"]
         lm_bias[..., self.tokenizer.pad_token_id] = torch.finfo(torch.float16).min
-        for cls_class, freq in self.model_config["classification_pos_freq"].items():
+        for cls_class, freq in self.config["model"]["classification_pos_freq"].items():
             idx = self.tokenizer.encode(f"<|{cls_class}|>")[0]
             lm_bias[..., idx] = torch.log(torch.tensor(freq))
             lm_bias[..., idx + 1] = torch.log(torch.tensor(1 - freq))

@@ -52,7 +52,7 @@ class ModelHelper(ABC):
 
     def make_optimizer(self, model) -> torch.optim.Optimizer:
         optimizer_cls = getattr(
-            torch.optim, self.model_config("optimizer_name", "AdamW")
+            torch.optim, self.model_config.get("optimizer_name", "AdamW")
         )
         parameters = [{"params": model.parameters()}]
 
