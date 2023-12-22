@@ -24,7 +24,7 @@ class GPT2TrainHelper:
         if not aggregated:
             path = os.path.join(self.config["data"]["train"], split)
         else:
-            path = os.path.join(self.config["data"]["eval"], split)
+            path = os.path.join(self.config["data"]["evaluation"], split)
         self.data = datasets.load_from_disk(path)
 
         return self.data

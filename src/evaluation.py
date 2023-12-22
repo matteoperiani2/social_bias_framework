@@ -1,114 +1,63 @@
-import gc
-import numpy as np
-from transformers import LogitsProcessorList
-from tqdm import tqdm
-import torch
-import pandas as pd
-
-from .utils import get_predictions
-from .processor import RestrictTokensGenerationProcessor
+import evaluate
+# from nltk.corpus import stopwords
+# from nltk import download
+# import gensim.downloader as api
+import src.models.gpt2 as gpt2
+import src.models.bart as bart
 from .text_similarity import TextSimilarity
-
-from sklearn.metrics import f1_score
-from rouge import Rouge
+# download('stopwords')
 
 
-def generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config):  
-    model.eval()
-  
-    clf_labels = np.zeros((len(dataloader)*config['batch_size'], 5), dtype=np.int32)
-    clf_preds = np.zeros((len(dataloader)*config['batch_size'], 5), dtype=np.int32)
-
-    minority_preds = []
-    minority_labels = []
-    stereotype_preds = []
-    stereotype_labels = []
-
-    allowed_tokens = ['<|offY|><|offN|>', '<|intY|><|intN|>', '<|sexY|><|sexN|>', '<|grpY|><|grpN|>', '<|ingrpY|><|ingrpN|>']
-    allowed_tokens_ids = tokenizer(allowed_tokens)['input_ids']
-    positive_cls_tokens = tokenizer('<|offY|><|intY|><|sexY|><|grpY|><|ingrpY|>')['input_ids']
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    with torch.no_grad():
-        with tqdm(total=len(dataloader), unit="batch", desc=split) as pbar:
-            for idx,data in enumerate(dataloader):
-                inputs = {k: torch.as_tensor(v, device=device) for k,v in data.items() if k in ['input_ids', 'attention_mask']}
-
-                processor = RestrictTokensGenerationProcessor(step_cls_tokens=allowed_tokens_ids,
-                                                                  sep_token_id=tokenizer.sep_token_id, 
-                                                                  eos_token_id=tokenizer.eos_token_id,
-                                                                  max_length=gen_cfg.max_new_tokens,
-                                                                  device=device)
-                logits_processor = LogitsProcessorList([processor])
-
-                generate_out = model.generate(**inputs,
-                                              generation_config=gen_cfg,
-                                              logits_processor=logits_processor
-                )
-                generate_out = generate_out.cpu().numpy()                
-                gen_clf, gen_minorities, gen_stereotypes = get_predictions(tokenizer, generate_out, positive_cls_tokens)
-
-                start_idx = idx*config['batch_size']
-                end_idx = start_idx+config['batch_size']
-                clf_labels[start_idx:end_idx, ...] = np.asarray(data["class_labels"])
-                clf_preds[start_idx:end_idx, ...] = np.asarray(gen_clf)
-
-                minority_preds.extend(gen_minorities)
-                minority_labels.extend(data["minority_labels"])
-                stereotype_preds.extend(gen_stereotypes)
-                stereotype_labels.extend(data["stereotype_labels"])
-
-                pbar.update(1)
-
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    returns = {
-        "clf_preds": clf_preds.tolist(),
-        'minority_preds': minority_preds,
-        'stereotype_preds': stereotype_preds,
-        'clf_labels': clf_labels.tolist(),
-        'minority_labels': minority_labels,
-        'stereotype_labels': stereotype_labels
-    }
-
-    return pd.DataFrame.from_dict(returns)
+def generate_model_predictions(model, tokenizer, dataloader, split, gen_cfg, config):
+    if config.model['name'] == 'gpt2':
+        return gpt2.generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config)
+    elif config.model['name'] == 'bart':
+        return bart.generate_predictions(model, tokenizer, dataloader, split, gen_cfg, config)
+    else:
+        raise ValueError("Invalid name. Possible values are [gpt2, bart]")
 
 
 def evaluate_classification(labels, predictions):
+    f1 = evaluate.load('f1')
     f1_scores = []
     for lbls, preds in zip(labels, predictions):
-        mask_not_present_labels = lbls != 2
-        preds = preds[mask_not_present_labels]
-        f1 = f1_score(lbls[mask_not_present_labels],
-                      preds[mask_not_present_labels],
-                      average="binary")
-        f1_scores.append(f1)
+        score = f1(lbls[lbls != 2], preds[lbls != 2])
+        f1_scores.append(score)
 
     return f1_scores
 
 
-def evaluate_generation(labels, predictions, config):  
-    rouge_metric = Rouge()
+def evaluate_generation(labels, predictions, config):
+    rouge = evaluate.load('rouge')
+    bleu = evaluate.load("bleu")
     text_similarity = TextSimilarity(config['embedding_model'])
+    # stop_words = stopwords.words('english')
+    # model = api.load('word2vec-google-news-300')
+
     rouge_scores = []
+    bleu_scores = []
     similarity_scores = []
     for lbls, pred in zip(labels, predictions):
         # if post is offensive or it target a group
         if len(lbls) > 0:
             if pred != '':
-                r_scores = []
-                sim_scores = []
-                for lbl in lbls:
-                    r_score = rouge_metric.get_scores(pred, lbl)[0]["rouge-l"]["f"]
-                    s_score = text_similarity.similarity(pred, lbl)
-                    r_scores.append(r_score)
-                    sim_scores.append(s_score)
-                rouge_scores.append(np.nan_to_num(r_scores))
-                similarity_scores.append(sim_scores)
+                r_scores = rouge.compute(pred, lbls)['rougeL']
+                b_scores = bleu.compute(pred, lbls)['bleu']
+                s_scores = [text_similarity.similarity(pred, lbl) for lbl in lbls]
+
+                # pred_split = pred.lower().split()
+                # pred_split = [p for p in pred_split if p not in stop_words]
+                # for lbl in lbls:
+                #     lbl_split = lbl.lower().split()
+                #     lbl_split = [l for l in lbl_split if l not in stop_words]
+                #     wmd_score = model.wmdistance(pred_split, lbl_split)
+
+                rouge_scores.append(r_scores)
+                bleu_scores.append(b_scores)
+                similarity_scores.append(s_scores)
             else:
                 rouge_scores.append(0.)
+                bleu_scores.append(0.)
                 similarity_scores.append(0.)
 
     return {

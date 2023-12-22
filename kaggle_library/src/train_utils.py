@@ -27,7 +27,7 @@ class DummyScheduler:
         return {}
 
 def get_model_helper(config):
-    if config['model']['name'] == 'gpt2':
+    if config.model['name'] == 'gpt2':
         return GPT2TrainHelper(config)
     elif config.model['name'] == 'bart':
         return BartTrainHelper(config)

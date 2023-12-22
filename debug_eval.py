@@ -5,7 +5,7 @@ from src.dataset import SBICDataset
 from src.train_utils import *
 from src.config import Config
 from src.utils import fix_reproducibility
-from src.evaluation import generate_predictions, evaluate_generation
+from src.evaluation import generate_gpt2_predictions, evaluate_generation
 
 from transformers import GenerationConfig
 
@@ -36,7 +36,7 @@ gen_cfg.max_new_tokens = 100
 gen_cfg.do_sample = False
 gen_cfg.num_beams = 1
 
-results = generate_predictions(
+results = generate_gpt2_predictions(
     model, 
     tokenizer,
     dataloader,
