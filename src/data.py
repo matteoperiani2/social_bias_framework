@@ -1,18 +1,24 @@
-import codecs
 import html
 import pickle
 from collections import defaultdict
-from typing import Counter, Dict, Iterable, Optional, Set, Tuple
+from typing import Counter, Dict, Iterable, Literal, Optional, Set, Tuple, Union
 
 import datasets
 import emoji
 import numpy as np
+import pandas as pd
 import regex as re
-from .helper import GPT2TrainHelper
 
 from .config import Config
-
-from .utils import count_words, flatten, replace_str
+from .models import model_helper_factory, tokenization_helper_factory
+from .utils import (
+    count_words,
+    flatten,
+    from_pandas,
+    print_if_verbose,
+    replace_str,
+    to_pandas,
+)
 
 
 class GroupLabelProcessor:
@@ -316,30 +322,32 @@ def clean_data(config, verbose=True):
 
         return example
 
-    if verbose:
-        print("Loading raw data ...")
+    def split_groups(example):
+        group = example["group"]
+        if group is not None:
+            example["group"] = split_group_labels(group)
+
+        return example
+
+    print_if_verbose("Loading raw data ...", verbose=verbose)
     data = load_raw_data(config)
     data = rename_data_columns(data, config)
 
-    if verbose:
-        print("Removing invalid annotations ...")
+    print_if_verbose("Removing invalid annotations ...", verbose=verbose)
     data = data.filter(is_annotation_valid, num_proc=4)
 
-    if verbose:
-        print("Setting features to None ...")
+    print_if_verbose("Setting features to None ...", verbose=verbose)
     data = data.map(set_features_to_null_wrt_rules, num_proc=4)
 
-    if verbose:
-        print("Cleaning groups ...")
-    test = data.pop('test')
+    print_if_verbose("Cleaning groups ...", verbose=verbose)
+    test_data = data.pop("test").map(split_groups, num_proc=4)
     data = data.map(clean_groups, num_proc=4)
-    data['test'] = test
+    data["test"] = test_data
 
-    if verbose:
-        print("Saving data to", config.data.clean, "...")
+    print_if_verbose("Saving data to", config.data.clean, "...", verbose=verbose)
     data.save_to_disk(config.data.clean)
-    if verbose:
-        print("Complete!")
+
+    print_if_verbose("Complete!", verbose=verbose)
 
 
 def split_group_labels(group: str):
@@ -369,11 +377,6 @@ def remove_links(text: str):
     return re.sub(url_pattern, "", text)
 
 
-def decode_unicode_escape_sequences(text):
-    """Convert a string containing Unicode escape sequences to Unicode."""
-    return codecs.decode(text, "unicode_escape")
-
-
 __reddit_RT_at_author_regex = re.compile(r"^\s*RT @\S+:\s*")
 
 
@@ -396,6 +399,27 @@ __char_map = {
 }
 
 
+def remove_leading_non_alphanumeric_chars(text: str) -> str:
+    """
+    Removes leading non alpha-numeric characters from a given string.
+    """
+    start_index = 0
+    while start_index < len(text) and not text[start_index].isalnum():
+        start_index += 1
+
+    end_index = len(text) - 1
+    while end_index > start_index and not text[end_index].isalnum():
+        end_index -= 1
+
+    return text[start_index : end_index + 1]
+
+
+def remove_overlapping_posts(master_data, slave_data):
+    """Remove data in slave_data if post is present in master_data"""
+    posts = set(master_data["post"])
+    return slave_data.filter(lambda example: example["post"] not in posts, num_proc=4)
+
+
 def preprocess_post(post: str) -> str:
     pipeline = (
         unescape_html_str,
@@ -411,92 +435,128 @@ def preprocess_post(post: str) -> str:
     return post
 
 
+def preprocess_stereotype(stereotype: str) -> str:
+    pipeline = (
+        remove_leading_non_alphanumeric_chars,
+        white_space_fix,
+    )
+    for fn in pipeline:
+        stereotype = fn(stereotype)
+    return stereotype
+
+
 def preprocess_data(config, verbose=True):
     def _preprocess_post(example):
         example["post"] = preprocess_post(example["post"])
         return example
 
-    if verbose:
-        print("Loading clean data ...")
+    def _preprocess_stereotype(example):
+        stereotype = example["stereotype"]
+        if stereotype is not None:
+            example["stereotype"] = preprocess_stereotype(stereotype)
+        return example
+
+    print_if_verbose("Loading clean data ...", verbose=verbose)
     data = datasets.load_from_disk(config.data.clean)
 
-    if verbose:
-        print("Preprocessing posts ...")
+    print_if_verbose("Preprocessing posts ...", verbose=verbose)
     data = data.map(_preprocess_post, num_proc=4)
 
-    if verbose:
-        print("Saving data to", config.data.processed, "...")
+    print_if_verbose("Removing overlapping posts ...", verbose=verbose)
+    data["val"] = remove_overlapping_posts(data["train"], data["val"])
+    data["test"] = remove_overlapping_posts(data["train"], data["test"])
+    data["val"] = remove_overlapping_posts(data["test"], data["val"])
+
+    print_if_verbose("Preprocessing stereotypes ...", verbose=verbose)
+    data = data.map(_preprocess_stereotype, num_proc=4)
+
+    print_if_verbose("Saving data to", config.data.processed, "...", verbose=verbose)
     data.save_to_disk(config.data.processed)
-    if verbose:
-        print("Complete!")
+    print_if_verbose("Complete!", verbose=verbose)
 
 
-class GPT2DataHelper:
-    def __init__(self, config) -> None:
-        self.config = config
-        helper = GPT2TrainHelper(Config.to_dict(config))
-        self.tokenizer = helper._make_tokenizer()
+def aggregate_data(config, verbose=True):
+    def unique(x: pd.Series):
+        return x.unique().tolist() if x.notnull().any() else None
 
-    def tokenize(self, example: dict):
-        cls_features = []
-        for cls_idx, cls_name in enumerate(self.config.classification_columns):
-            value = example[cls_name]
-            if value is not None:
-                value = int(value > 0.5)  # binarize
-                cls_token = self.config.model.cls_token_map[cls_idx][value]
-            else:
-                cls_token = (
-                    self.tokenizer.pad_token
-                )  # trick: pad token will be ignored by loss
-            cls_features.append(cls_token)
-
-        generative_features = ""
-        if example["group"] is not None:
-            assert example["stereotype"] is not None
-
-            generative_features = (
-                ", ".join(example["group"])
-                + self.tokenizer.sep_token
-                + example["stereotype"]
-                + self.tokenizer.sep_token
-            )
-
-        cls_str = "".join(cls_features[:-1])
-        in_group_token = cls_features[-1] if example["in_group"] is not None else ""
-
-        input_str = example["post"] + self.tokenizer.sep_token
-        label_str = (
-            cls_str + self.tokenizer.sep_token + generative_features + in_group_token
-        )
-
-        input_ids = self.tokenizer(
-            text=input_str,
-            text_pair=label_str,
-            padding=False,
-            truncation="only_first",
-            max_length=self.tokenizer.model_max_length,
-            return_attention_mask=False,
-        )["input_ids"]
-        attention_mask = [
-            0 if token == self.tokenizer.pad_token_id else 1 for token in input_ids
-        ]
-        labels = self.tokenizer(label_str, padding=False, truncation=False)["input_ids"]
-        labels = [
-            -100 if token == self.tokenizer.pad_token_id else token for token in labels
-        ]
-        labels[4] = -100
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-
-
-def tokenize_data(config):
-    data_helper = GPT2DataHelper(config) if config.model.name == "gpt2" else None
+    print_if_verbose("Loading processed data ...", verbose=verbose)
     data = datasets.load_from_disk(config.data.processed)
-    data.pop('test')
-    data = data.map(data_helper.tokenize, num_proc=4)
-    data = data.select_columns(['input_ids', 'attention_mask', 'labels'])
-    data.save_to_disk(config.data.train)
+    cols = (
+        ["post"]
+        + config.classification_columns
+        + config.generative_columns
+        + ["source"]
+    )
+    data = data.select_columns(cols)
+    df = to_pandas(data)
+
+    print_if_verbose("Aggregating data ...", verbose=verbose)
+    agg_functions = {col: "mean" for col in config.classification_columns}
+    agg_functions.update(
+        {col: unique for col in config.generative_columns + ("source",)}
+    )
+    agg_functions["split"] = lambda x: x.iloc[0]
+    df["group"] = df["group"].str.join(", ")
+    df = df.groupby("post").aggregate(agg_functions).reset_index()
+
+    print_if_verbose("Saving data to", config.data.aggregated, "...", verbose=verbose)
+    dataset = from_pandas(df)
+    dataset.save_to_disk(config.data.aggregated)
+    print_if_verbose("Complete!", verbose=verbose)
+
+
+def tokenize_data(
+    config,
+    task: Union[Literal["train"], Literal["inference"]],
+    use_aggregate=False,
+    verbose=True,
+):
+    if task == "train" and use_aggregate:
+        raise NotImplementedError("Train with aggregated dataset is not supported.")
+
+    tokenization_helper = tokenization_helper_factory(Config.to_dict(config))
+
+    print_if_verbose("Loading processed data ...", verbose=verbose)
+    path = config.data.aggregated if use_aggregate else config.data.processed
+    data = datasets.load_from_disk(path)
+
+    print_if_verbose("Tokenizing data ...", verbose=verbose)
+
+    remove_columns = []
+    if task == "train":
+        data.pop("test")
+        remove_columns = data["train"].column_names
+    data = data.map(
+        tokenization_helper.tokenize,
+        fn_kwargs={"task": task, "ignore_labels": use_aggregate},
+        remove_columns=remove_columns,
+        num_proc=4,
+    )
+
+    path = (
+        config.data.train
+        if task == "train"
+        else config.data.eval
+        if not use_aggregate
+        else config.data.aggregated_eval
+    )
+    print_if_verbose("Saving data to", path, "...", verbose=verbose)
+    data.save_to_disk(path)
+
+    print_if_verbose("Complete!", verbose=verbose)
+
+
+def print_tokenized_dataset(data, config, n=10):
+    helper = model_helper_factory(Config.to_dict(config))
+    tokenizer = helper.make_tokenizer()
+    examples = data.shuffle().select(range(n))
+    for example in examples:
+        for key, value in example.items():
+            print(f"{key}:", value)
+            if key != "attention_mask":
+                value = [
+                    token if token != -100 else tokenizer.pad_token_id
+                    for token in value
+                ]
+                print(f"{key}:", tokenizer.decode(value, skip_special_tokens=False))
+        print("-" * 50)

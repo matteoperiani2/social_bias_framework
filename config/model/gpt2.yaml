@@ -6,12 +6,8 @@ num_epochs: 1
 learning_rate: 1e-5
 padding_side: left
 warmup_fraction: 0.2
-checkpoint_interval: 700
-log_interval: 1000
-eval_interval: 1000
-
-
 checkpoint_dir: checkpoints/gpt2
+accumulation_steps: 1
 
 
 special_tokens:
@@ -55,15 +51,3 @@ generation_params:
   max_new_tokens: 100
   do_sample: False
   num_beams: 1
-
-# ce_wights:
-#   50259: 0.2
-#   50260: 0.3
-#   50261: 0.5
-#   50262: 0.4
-#   50263:
-#   50264:
-#   50265:
-#   50266:
-#   50267:
-#   50268:

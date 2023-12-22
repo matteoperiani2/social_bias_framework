@@ -5,15 +5,7 @@ learning_rate: 1e-5
 padding_side: right
 decoder_max_length: 512
 warmup_fraction: 0.1
-checkpoint_interval: 700
-log_interval: 700
-eval_interval: 700
-
-data:
-  processed: data/preproc
-  aggregated: data/aggregated
-  train: data/train
-  prediction: data/predictions
+checkpoint_dir: checkpoints/gpt2
 
 generation_parameters:
   penalty_alpha: 0.4
