@@ -92,5 +92,5 @@ class GPT2Helper(ModelHelper):
         params["lm_logits_bias"][..., :] = lm_bias
         self.model.load_state_dict(params)
 
-    def make_loss(self):
-        return loss
+    def make_loss(self, tokenizer):
+        return loss(tokenizer, self.config)

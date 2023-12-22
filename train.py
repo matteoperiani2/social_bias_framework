@@ -46,7 +46,7 @@ if __name__ == "__main__":
             optimizer, steps_per_epoch=len(train_dataloader)
         )
 
-        loss_fn = train_helper.make_loss()
+        loss_fn = train_helper.make_loss(tokenizer)
 
         train(
             model,
@@ -57,8 +57,6 @@ if __name__ == "__main__":
             scheduler,
             config,
         )
-
-        torch.save(model.statedict(), f"{config.model.name}{config.seed}.pt")
 
     gc.collect()
     torch.cuda.empty_cache()

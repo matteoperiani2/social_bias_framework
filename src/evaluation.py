@@ -1,78 +1,83 @@
 from collections import Counter
-
 import evaluate
-import matplotlib.pyplot as plt
-import numpy as np
+import nltk
 from nltk.corpus import stopwords
 from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
-
-import src.models.bart as bart
-import src.models.gpt2 as gpt2
-
 from .text_similarity import TextSimilarity
+from rouge import Rouge
+from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 
-
-def generate_model_predictions(model, tokenizer, dataloader, split, gen_cfg, config):
-    if config.model["name"] == "gpt2":
-        return gpt2.generate_predictions(
-            model, tokenizer, dataloader, split, gen_cfg, config
-        )
-    elif config.model["name"] == "bart":
-        return bart.generate_predictions(
-            model, tokenizer, dataloader, split, gen_cfg, config
-        )
-    else:
-        raise ValueError("Invalid name. Possible values are [gpt2, bart]")
-
-
-def evaluate_classification(labels, predictions):
+def evaluate_classification(labels, predictions, cls_columns):
     f1 = evaluate.load("f1")
-    f1_scores = []
-    for lbls, preds in zip(labels, predictions, strict=True):
-        score = f1(lbls[lbls != 2], preds[lbls != 2])
-        f1_scores.append(score)
+    f1_scores = dict()
+    for lbls, preds, cols in zip(labels, predictions, cls_columns, strict=True):
+        score = f1.compute(predictions=preds[lbls != -1], references=lbls[lbls != -1])['f1']
+        f1_scores[cols] = score
 
     return f1_scores
 
 
-def evaluate_generation(labels, predictions, config):
-    rouge = evaluate.load("rouge")
-    bleu = evaluate.load("bleu")
-    text_similarity = TextSimilarity(config["embedding_model"])
+def evaluate_generation(data, config):
+    rouge = Rouge(metrics=["rouge-l"], stats='f')
+
+    # rouge = evaluate.load("rouge")
+    # bleu = evaluate.load("bleu")
+    # similarity = TextSimilarity(config["embedding_model"])
     # stop_words = stopwords.words('english')
     # model = api.load('word2vec-google-news-300')
 
-    rouge_scores = []
-    bleu_scores = []
-    similarity_scores = []
-    for lbls, pred in zip(labels, predictions, strict=True):
-        # if post is offensive or it target a group
-        if len(lbls) > 0:
-            if pred != "":
-                r_scores = rouge.compute(pred, lbls)["rougeL"]
-                b_scores = bleu.compute(pred, lbls)["bleu"]
-                s_scores = [text_similarity.similarity(pred, lbl) for lbl in lbls]
+    params = {
+        'rouge': rouge,
+        'similarity': None
+    }
 
-                # pred_split = pred.lower().split()
-                # pred_split = [p for p in pred_split if p not in stop_words]
-                # for lbl in lbls:
-                #     lbl_split = lbl.lower().split()
-                #     lbl_split = [l for l in lbl_split if l not in stop_words]
-                #     wmd_score = model.wmdistance(pred_split, lbl_split)
+    data = data.map(
+        compute_scores,
+        load_from_cache_file=False,
+        fn_kwargs=params,
+        batched=False
+    )
+    
+    return data
 
-                rouge_scores.append(r_scores)
-                bleu_scores.append(b_scores)
-                similarity_scores.append(s_scores)
-            else:
-                rouge_scores.append(0.0)
-                bleu_scores.append(0.0)
-                similarity_scores.append(0.0)
 
-    return {"rouges": rouge_scores, "similarities": similarity_scores}
+def compute_scores(data, rouge, similarity):
+    group_scores = {}
+    stereotype_score = {}
+
+    if data['group'] != None and data['group_preds'] != '':
+        group_scores['rouge'] = [rouge.get_scores(data['group_preds'], lbl)[0]['rouge-l']['f'] for lbl in data['group'] if lbl is not None]
+        group_scores['bleu'] = [
+            corpus_bleu([[lbl]],
+                        [data['group_preds']],
+                        weights=(0.5, 0.5),
+                        smoothing_function=SmoothingFunction().method1
+            ) for lbl in data['group'] if lbl is not None 
+        ]
+    else:
+        group_scores['rouge'] = None
+
+    if data['stereotype'] != None and data['stereotype_preds'] != '':
+        stereotype_score['rouge'] = [rouge.get_scores(data['stereotype_preds'], lbl)[0]['rouge-l']['f'] for lbl in data['stereotype'] if lbl is not None]
+        stereotype_score['bleu'] = [
+            corpus_bleu([[lbl]],
+                        [data['stereotype_preds']],
+                        weights=(0.5, 0.5),
+                        smoothing_function=SmoothingFunction().method1
+            ) for lbl in data['stereotype'] if lbl is not None 
+        ]
+
+    else:
+        stereotype_score['rouge'] = None
+
+    return {
+        'group_scores': group_scores,
+        'stereotype_scores': stereotype_score
+    }
 
 
 def print_classification_results(
-    tokenizer, labels, predictions, f1_scores, show_cm=True
+    labels, predictions, results, show_cm=True
 ):
     annotation_type = [
         "Offensive",
@@ -82,18 +87,17 @@ def print_classification_results(
         "Speaker in group",
     ]
 
-    for type, score in zip(annotation_type, f1_scores, strict=True):
+    for type, score in zip(annotation_type, results.values(), strict=True):
         print(f"{type}: {score:.3f}")
 
     if show_cm:
         plt.rcParams["font.size"] = "12"
         _, axs = plt.subplots(1, 5, figsize=(35, 15))
         for j in range(5):
-            lbl = tokenizer.batch_decode(
-                np.unique(np.concatenate((predictions[j], labels[j])))
-            )
-            cm = confusion_matrix(labels[j], predictions[j])
-            cm_disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=lbl)
+            lbls = labels[j]
+            preds = predictions[j]
+            cm = confusion_matrix(lbls[lbls != -1], preds[lbls != -1], normalize='all')
+            cm_disp = ConfusionMatrixDisplay(confusion_matrix=cm)
             cm_disp.plot(
                 ax=axs[j],
                 cmap="Blues",

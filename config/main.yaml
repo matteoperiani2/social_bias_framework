@@ -28,8 +28,7 @@ model:
   scheduler: linear
   gradient_clip: 1.0
   mixed_precision: fp16
-  checkpoint_interval: 700
-  log_interval: 700
+  log_interval: 2000
 
 
 classification_columns:

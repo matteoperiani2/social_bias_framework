@@ -211,4 +211,4 @@ def save_model_checkpoint(model, step, config):
 
     create_dirs_for_file(checkpoint_file)
     torch.save(model.state_dict(), checkpoint_file)
-    # wandb.save(checkpoint_file)
+    wandb.save(checkpoint_file)

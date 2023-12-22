@@ -162,14 +162,23 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
         )
 
 
-def loss(outputs, data):
-    logits = outputs.logits.transpose(-1, -2)
-    labels = data["labels"]
-    loss = F.cross_entropy(logits, labels, reduction="none")  # (BATCH, SEQ_LEN)
+def loss(tokenizer, config):
+    weight = torch.ones(len(tokenizer))
+    for cls_name,freq in config['model']['classification_pos_freq'].items():
+        pos_id = tokenizer.encode(f'<|{cls_name}Y|>')[0]
+        neg_id = tokenizer.encode(f'<|{cls_name}N|>')[0]
+        weight[pos_id] = 1/freq
+        weight[neg_id] = 1/(1-freq)
 
-    n_valid_tokens = torch.sum(labels != -100, dim=-1)  # (BATCH, )
-    loss = torch.sum(loss, dim=-1) / torch.clamp(n_valid_tokens, min=1e-7)  # (BATCH, )
-    loss = torch.mean(loss)  # (1,)
+    def loss(outputs, data):
+        logits = outputs.logits.transpose(-1, -2)
+        labels = data["labels"]
+        loss = F.cross_entropy(logits, labels, reduction="none", weight=weight.to(logits.device))  # (BATCH, SEQ_LEN)
+
+        n_valid_tokens = torch.sum(labels != -100, dim=-1)  # (BATCH, )
+        loss = torch.sum(loss, dim=-1) / torch.clamp(n_valid_tokens, min=1e-7)  # (BATCH, )
+        loss = torch.mean(loss)  # (1,)
+        return loss
     return loss
 
 
@@ -200,23 +209,26 @@ def generate_predictions(data, model, tokenizer, collator, config):
         "device": device,
     }
 
-    batch_size = config.model.get(
-        "generation_batch_size", config.model["val_batch_size"]
+    with torch.no_grad():
+        predictions = data.map(
+            _generate_batch_predicitons,
+            fn_kwargs=params,
+            batched=True,
+            batch_size= config.model["generate_batch_size"],
+            remove_columns=["input_ids", "attention_mask"],
+            load_from_cache_file=False,
+        )
+
+    predictions = predictions.map(
+        _aggregate_labels,
+        load_from_cache_file=False,
+        fn_kwargs={'cols': config.classification_columns},
+        remove_columns=config.classification_columns
     )
-    try:
-        with torch.no_grad():
-            predictions = data.map(
-                _generate_batch_predicitons,
-                fn_kwargs=params,
-                batched=True,
-                batch_size=batch_size,
-                remove_columns=["input_ids", "attention_mask"],
-                load_from_cache_file=False,
-            )
-    finally:
-        model.cpu()
-        gc.collect()
-        torch.cuda.empty_cache()
+
+    model.cpu()
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return predictions
 
@@ -249,7 +261,7 @@ def _generate_batch_predicitons(
 
     return {
         "cls_preds": cls_preds,
-        "minority_preds": minorities_preds,
+        "group_preds": minorities_preds,
         "stereotype_preds": stereotypes_preds,
     }
 
@@ -278,7 +290,7 @@ def _process_predictions(tokenizer, predictions, positive_cls_tokens):
         ]
 
         # if the model predict not offensive or not to a group, ignore the generation
-        if pred[0] == 0 or pred[-2] == 0:
+        if bin_cls_preds[0] == 0 or bin_cls_preds[-2] == 0:
             bin_cls_preds[-2] = 0
             bin_cls_preds[-1] = 0
             class_preds.append(bin_cls_preds)
@@ -306,3 +318,8 @@ def _process_predictions(tokenizer, predictions, positive_cls_tokens):
     stereotype_preds = tokenizer.batch_decode(stereotype_preds)
 
     return class_preds, minority_preds, stereotype_preds
+
+
+def _aggregate_labels(data, cols):
+    values = [int(v>=0.5) if v is not None else -1 for k,v in data.items() if k in cols]
+    return {'labels': values}

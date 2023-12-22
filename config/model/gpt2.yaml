@@ -1,6 +1,6 @@
 name: gpt2
 checkpoint_name: gpt2
-batch_size: 8
+batch_size: 4
 val_batch_size: 16
 num_epochs: 1 
 learning_rate: 1e-5
@@ -8,7 +8,7 @@ padding_side: left
 warmup_fraction: 0.2
 checkpoint_dir: checkpoints/gpt2
 accumulation_steps: 1
-
+generate_batch_size: 16
 
 special_tokens:
   pad_token: <|pad|>
@@ -40,11 +40,11 @@ cls_token_map:
 
 
 classification_pos_freq:
-  offY:  0.579
-  intY: 0.516
-  sexY: 0.091
-  grpY: 0.644
-  ingrpY: 0.087
+  'off': 0.485
+  int: 0.515
+  sex: 0.085
+  vs_group: 0.656
+  in_group: 0.023
 
 
 generation_params:
