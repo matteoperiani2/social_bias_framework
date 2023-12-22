@@ -1,19 +1,17 @@
 import os
 
-import datasets
 import pandas as pd
 import torch
 import transformers
 
-from src.collators import BartDataCollator, GPT2DataCollator
-from src.models.bart import BartSBF
-from src.models.gpt2 import GPT2SBF
+from ..helper import ModelHelper
+from .data_collator import GPT2DataCollator
+from .model import GPT2SBF, loss
 
 
-class GPT2TrainHelper:
-    def __init__(self, config):
-        super(GPT2TrainHelper, self).__init__()
-        self.config = config
+class GPT2Helper(ModelHelper):
+    def __init__(self, config: dict):
+        super().__init__(config)
         self.model = None
         self.tokenizer = None
         self.data = None
@@ -35,8 +33,8 @@ class GPT2TrainHelper:
 
         return self.data.to_numpy()
 
-    def make_collator(self):
-        self.collator = GPT2DataCollator(tokenizer=self.tokenizer, model=self.model)
+    def make_data_collator(self, tokenizer, model):
+        self.collator = GPT2DataCollator(tokenizer=tokenizer, model=model)
         return self.collator
 
     def make_tokenizer(self, verbose=False):
@@ -51,19 +49,20 @@ class GPT2TrainHelper:
             print(" -", tokenizer.all_special_tokens)
             print(" -", tokenizer(tokenizer.all_special_tokens)["input_ids"])
 
+        self.tokenizer = tokenizer
         return tokenizer
 
-    def make_model(self, tokenizer):
+    def make_model(self):
         self.model = GPT2SBF.from_pretrained(self.config["model"]["checkpoint_name"])
         # init new embedding
-        new_tokens = len(tokenizer) - self.model.config.vocab_size
-        self.model.resize_token_embeddings(len(tokenizer))
+        new_tokens = len(self.tokenizer) - self.model.config.vocab_size
+        self.model.resize_token_embeddings(len(self.tokenizer))
         self.__init_new_tokens_embeddings(new_tokens)
         self.__init_lm_bias()
 
-        self.model.transformer.config.pad_token_id = tokenizer.pad_token_id
-        self.model.transformer.config.sep_token_id = tokenizer.sep_token_id
-        self.model.transformer.config.eos_token_id = tokenizer.eos_token_id
+        self.model.transformer.config.pad_token_id = self.tokenizer.pad_token_id
+        self.model.transformer.config.sep_token_id = self.tokenizer.sep_token_id
+        self.model.transformer.config.eos_token_id = self.tokenizer.eos_token_id
 
         return self.model
 
@@ -92,42 +91,12 @@ class GPT2TrainHelper:
         params = self.model.state_dict()
         lm_bias = params["lm_logits_bias"]
         lm_bias[..., self.tokenizer.pad_token_id] = torch.finfo(torch.float16).min
-        for cls_class, freq in self.config["classification_pos_freq"].items():
+        for cls_class, freq in self.model_config["classification_pos_freq"].items():
             idx = self.tokenizer.encode(f"<|{cls_class}|>")[0]
             lm_bias[..., idx] = torch.log(torch.tensor(freq))
             lm_bias[..., idx + 1] = torch.log(torch.tensor(1 - freq))
         params["lm_logits_bias"][..., :] = lm_bias
         self.model.load_state_dict(params)
 
-
-class BartTrainHelper:
-    def __init__(self, config):
-        super(BartTrainHelper, self).__init__()
-        self.config = config
-        self.model = None
-        self.tokenizer = None
-        self.data = None
-        self.collator = None
-
-    def make_model(self):
-        self.model = BartSBF.from_pretrained(
-            self.config["model"]["checkpoint_name"],
-            num_labels=5,
-            classifier_dropout=0.1,
-        )
-        return self.model
-
-    def make_tokenizer(self):
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            self.config["model"]["checkpoint_name"]
-        )
-        return self.tokenizer
-
-    def get_data(self, split):
-        path = os.path.join(self.config["data"], split)
-        self.data = datasets.load_from_disk(path)
-        return self.data
-
-    def make_collator(self):
-        self.collator = BartDataCollator(tokenizer=self.tokenizer, model=self.model)
-        return self.collator
+    def make_loss(self):
+        return loss

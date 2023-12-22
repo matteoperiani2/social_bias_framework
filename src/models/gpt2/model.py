@@ -1,19 +1,12 @@
-from typing import Callable, List, Optional, Union, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
-from torch import LongTensor
-from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.modules import Embedding
 import transformers
-from transformers.generation.configuration_utils import GenerationConfig
-from transformers.generation.logits_process import LogitsProcessorList
-from transformers.generation.stopping_criteria import StoppingCriteriaList
-from transformers.generation.streamers import BaseStreamer
-from transformers.generation.utils import GenerateOutput
-from transformers.modeling_utils import PreTrainedModel
+from torch.nn.modules import Embedding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
+
 
 class GPT2SBF(transformers.GPT2PreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
@@ -38,7 +31,9 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
         self.register_buffer("lm_logits_bias", torch.zeros((1, new_num_tokens)))
         return super().resize_token_embeddings(new_num_tokens)
 
-    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
+    def prepare_inputs_for_generation(
+        self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs
+    ):
         token_type_ids = kwargs.get("token_type_ids", None)
         # Omit tokens covered by past_key_values
         if past_key_values:
@@ -108,7 +103,9 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         transformer_outputs = self.transformer(
             input_ids,
@@ -141,7 +138,6 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
             attentions=transformer_outputs.attentions,
             cross_attentions=transformer_outputs.cross_attentions,
         )
-    
 
     @staticmethod
     def _reorder_cache(
@@ -153,17 +149,20 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
         beam_idx at every generation step.
         """
         return tuple(
-            tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past)
+            tuple(
+                past_state.index_select(0, beam_idx.to(past_state.device))
+                for past_state in layer_past
+            )
             for layer_past in past_key_values
         )
-    
+
 
 def loss(outputs, data, config):
     logits = outputs.logits.transpose(-1, -2)
-    labels = data['labels']
-    loss = F.cross_entropy(logits, labels, reduction='none') #(BATCH, SEQ_LEN)
+    labels = data["labels"]
+    loss = F.cross_entropy(logits, labels, reduction="none")  # (BATCH, SEQ_LEN)
 
-    n_valid_tokens = torch.sum(labels != -100, dim=-1) # (BATCH, ) 
-    loss = torch.sum(loss, dim=-1) / torch.clamp(n_valid_tokens, min=1e-7) # (BATCH, )
-    loss = torch.mean(loss) # (1,)
+    n_valid_tokens = torch.sum(labels != -100, dim=-1)  # (BATCH, )
+    loss = torch.sum(loss, dim=-1) / torch.clamp(n_valid_tokens, min=1e-7)  # (BATCH, )
+    loss = torch.mean(loss)  # (1,)
     return loss

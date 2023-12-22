@@ -9,10 +9,9 @@ import numpy as np
 import pandas as pd
 import regex as re
 
-from src.config import Config
-from src.helper import GPT2TrainHelper
-from src.train_utils import get_model_helper
-from src.utils import (
+from .config import Config
+from .models import model_helper_factory, tokenization_helper_factory
+from .utils import (
     count_words,
     flatten,
     from_pandas,
@@ -506,86 +505,6 @@ def aggregate_data(config, verbose=True):
     print_if_verbose("Complete!", verbose=verbose)
 
 
-class GPT2DataHelper:
-    def __init__(self, config) -> None:
-        self.config = config
-        helper = GPT2TrainHelper(Config.to_dict(config))
-        self.tokenizer = helper.make_tokenizer()
-
-    def tokenize(
-        self,
-        example: dict,
-        task: Union[Literal["train"], Literal["inference"]],
-        ignore_labels=False,
-    ):
-        input_str = example["post"] + self.tokenizer.sep_token
-        label_str = None
-        if not ignore_labels:
-            cls_features = []
-            for cls_idx, cls_name in enumerate(self.config.classification_columns):
-                value = example[cls_name]
-                if value is not None:
-                    value = int(value > 0.5)  # binarize
-                    cls_token = self.config.model.cls_token_map[cls_idx][value]
-                else:
-                    cls_token = (
-                        self.tokenizer.pad_token
-                    )  # trick: pad token will be ignored by loss
-                cls_features.append(cls_token)
-
-            generative_features = ""
-            if example["group"] is not None:
-                assert example["stereotype"] is not None
-
-                generative_features = (
-                    self.tokenizer.sep_token
-                    + ", ".join(example["group"])
-                    + self.tokenizer.sep_token
-                    + example["stereotype"]
-                    + self.tokenizer.sep_token
-                )
-
-            cls_str = "".join(cls_features[:-1])
-            in_group_token = cls_features[-1] if example["in_group"] is not None else ""
-
-            label_str = cls_str + generative_features + in_group_token
-
-        input_ids = self.tokenizer(
-            text=input_str,
-            text_pair=label_str if task == "train" else None,
-            padding=False,
-            truncation="only_first",
-            max_length=self.tokenizer.model_max_length,
-            return_attention_mask=False,
-        )["input_ids"]
-        if task == "train":
-            # shift tokens to the left
-            input_ids = input_ids[:-1]
-
-        attention_mask = [
-            0 if token == self.tokenizer.pad_token_id else 1 for token in input_ids
-        ]
-
-        outputs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-        }
-
-        if not ignore_labels:
-            labels = self.tokenizer(label_str, padding=False, truncation=False)[
-                "input_ids"
-            ]
-            labels = [
-                -100 if token == self.tokenizer.pad_token_id else token
-                for token in labels
-            ]
-            if len(labels) > 4:
-                labels[4] = -100  # ignore first sep token
-            outputs["labels"] = labels
-
-        return outputs
-
-
 def tokenize_data(
     config,
     task: Union[Literal["train"], Literal["inference"]],
@@ -595,7 +514,7 @@ def tokenize_data(
     if task == "train" and use_aggregate:
         raise NotImplementedError("Train with aggregated dataset is not supported.")
 
-    data_helper = GPT2DataHelper(config) if config.model.name == "gpt2" else None
+    tokenization_helper = tokenization_helper_factory(Config.to_dict(config))
 
     print_if_verbose("Loading processed data ...", verbose=verbose)
     path = config.data.aggregated if use_aggregate else config.data.processed
@@ -608,7 +527,7 @@ def tokenize_data(
         data.pop("test")
         remove_columns = data["train"].column_names
     data = data.map(
-        data_helper.tokenize,
+        tokenization_helper.tokenize,
         fn_kwargs={"task": task, "ignore_labels": use_aggregate},
         remove_columns=remove_columns,
         num_proc=4,
@@ -628,7 +547,7 @@ def tokenize_data(
 
 
 def print_tokenized_dataset(data, config, n=10):
-    helper = get_model_helper(Config.to_dict(config))
+    helper = model_helper_factory(Config.to_dict(config))
     tokenizer = helper.make_tokenizer()
     examples = data.shuffle().select(range(n))
     for example in examples:

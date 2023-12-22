@@ -1,4 +1,3 @@
-import gc
 import inspect
 import os
 import random
@@ -9,16 +8,11 @@ import torch.nn as nn
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import get_scheduler
 
-import src.models.bart as bart
-import src.models.gpt2 as gpt2
 import wandb
 
-from .helper import BartTrainHelper, GPT2TrainHelper
 
-
-class DummyScheduler:
+class DummyLRScheduler:
     def __init__(self, optimizer: torch.optim.Optimizer) -> None:
         self.optimizer = optimizer
 
@@ -30,28 +24,6 @@ class DummyScheduler:
 
     def state_dict(self):
         return {}
-
-
-def get_model_helper(config):
-    if config["model"]["name"] == "gpt2":
-        return GPT2TrainHelper(config)
-    elif config["model"]["name"] == "bart":
-        return BartTrainHelper(config)
-    else:
-        raise ValueError("Invalid name. Possible values are [gpt2, bart]")
-
-
-def make_dataloader(dataset, collator, config, shuffle=True):
-    dataloader = create_reproducible_dataloader(
-        dataset,
-        batch_size=config.model["batch_size"],
-        collate_fn=collator,
-        num_workers=0,
-        pin_memory=True,
-        shuffle=shuffle,
-        drop_last=True,
-    )
-    return dataloader
 
 
 def fix_reproducibility(seed):
@@ -75,31 +47,6 @@ def seed_worker(worker_id):
 def create_reproducible_dataloader(*args, **kwargs):
     generator = torch.Generator()
     return DataLoader(*args, **kwargs, worker_init_fn=seed_worker, generator=generator)
-
-
-def make_optimizer(model, config):
-    return torch.optim.AdamW(model.parameters(), lr=config.model["learning_rate"])
-
-
-def make_scheduler(optimizer, steps_per_epoch, config):
-    total_steps = steps_per_epoch * config.model["num_epochs"]
-    warmup_steps = int(config.model["warmup_fraction"] * total_steps)
-    if config.model["scheduler"] != "none":
-        return get_scheduler(
-            config.model["scheduler"],
-            optimizer=optimizer,
-            num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps,
-        )
-
-    return DummyScheduler(optimizer=optimizer)
-
-
-def make_loss(confg):
-    if confg.model["name"] == "gpt2":
-        return gpt2.loss
-    elif confg.model["name"] == "bart":
-        return bart.loss
 
 
 def train(
@@ -183,9 +130,7 @@ def train(
     if monitor:
         wandb.unwatch(watch_list)
 
-    gc.collect()
     accelerator.free_memory()
-    torch.cuda.empty_cache()
 
 
 def _train_batch(

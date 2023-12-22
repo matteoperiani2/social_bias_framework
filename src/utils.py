@@ -165,7 +165,7 @@ def process_gpt2_predictions(tokenizer, predictions, positive_cls_tokens):
 
 def print_if_verbose(*values: str, verbose: bool, **kwargs):
     if verbose:
-        print(values, **kwargs)
+        print(*values, **kwargs)
 
 
 def init_cross_entropy_weights(tokenizer, weight_dict):

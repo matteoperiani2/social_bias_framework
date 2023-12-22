@@ -1,62 +1,67 @@
+import gc
 import os
-import random
-import wandb
 
 import torch
-from transformers import set_seed
 
-from src.config import CONFIG
-from src.dataset import SBICDataset
-# from src.dataset_prompt import SBICDataset
-from src.train_utils import *
-from src.utils import fix_reproducibility
+import wandb
+from src.config import Config
+from src.models import model_helper_factory
+from src.train_utils import fix_reproducibility, train
 
 wandb.login()
-os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "true"
 
-with wandb.init(project=CONFIG.wandbConfig.project, config=CONFIG.hp):
+config = Config.load_config(model_name="gpt2")
+config = Config.to_dict(config)
+config["seed"] = 42
+config["epochs"] = 1
+config["checkpoint_interval"] = 3
+config["log_interval"] = 2
+config["eval_interval"] = 2
+
+with wandb.init(project=config["wandb"]["project"], config=config):
     config = wandb.config
     fix_reproducibility(config.seed)
 
-    # Make the model
-    tokenizer = make_tokenizer(config, add_special_tokens=True)
-    model = make_model(config, tokenizer, init_new_tokens=True)
-    # tokenizer = make_tokinzer(config, cross_attn=False, add_special_tokens=True)
-    # model = make_model(config, tokenizer, add_cross_attn=False, add_special_tokens=True)
+    # get the train helper
+    train_helper = model_helper_factory(config)
+
+    # Make the tokenizer and the model
+    tokenizer = train_helper.make_tokenizer()
+    model = train_helper.make_model()
 
     # Make the data
-    train_data = get_data("train")
-    val_data = get_data("validation")
-    
-    # train_data = np.array(random.choices(train_data, k=10832))
-    val_data = np.array(random.choices(val_data, k=2048))
-    
-    train_dataset = SBICDataset(train_data, tokenizer)
-    val_dataset = SBICDataset(val_data, tokenizer)
+    train_dataset = train_helper.get_data("train").select(range(10))
+    val_dataset = train_helper.get_data("val").select(range(10))
 
-    train_dataloader = make_dataloader(train_dataset, model, tokenizer, config)
-    val_dataloader = make_dataloader(val_dataset, model, tokenizer, config, shuffle=False)
+    collator = train_helper.make_data_collator(tokenizer, model)
+
+    train_dataloader = train_helper.make_dataloader(
+        train_dataset, collate_fn=collator, split="train"
+    )
+    val_dataloader = train_helper.make_dataloader(
+        val_dataset, collate_fn=collator, split="val"
+    )
 
     # Make the loss, the optimizer and the scheduler
-    optimizer = make_optimizer(model, config)
-    scheduler = make_scheduler(
-        optimizer, steps_per_epoch=len(train_dataloader), config=config
+    optimizer = train_helper.make_optimizer(model)
+    scheduler = train_helper.make_scheduler(
+        optimizer, steps_per_epoch=len(train_dataloader)
     )
+
+    loss_fn = train_helper.make_loss()
 
     train(
         model,
         train_dataloader,
         val_dataloader,
         optimizer,
+        loss_fn,
         scheduler,
-        config
+        config,
     )
 
-torch.save(model.state_dict(), f"checkpoints/{config.checkpoint_name}_full_init.pt")
+    torch.save(model.statedict(), f"{config.model.name}{config.seed}.pt")
 
 gc.collect()
 torch.cuda.empty_cache()
-
-
-
-

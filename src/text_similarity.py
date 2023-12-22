@@ -8,7 +8,6 @@ from angle_emb import AnglE
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics.pairwise import cosine_similarity
-from tqdm import tqdm
 
 from src.utils import batch
 
@@ -24,7 +23,7 @@ class TextSimilarity:
             embedding_model = self.embedding_model.cuda()
             batched_vectors = [
                 embedding_model.encode(batched_sentences, to_numpy=True)
-                for batched_sentences in tqdm(batch(sentences, batch_size=batch_size))
+                for batched_sentences in batch(sentences, batch_size=batch_size)
             ]
             del embedding_model
         finally:
