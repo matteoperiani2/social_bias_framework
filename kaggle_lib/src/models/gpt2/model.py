@@ -193,23 +193,24 @@ def generate_predictions(data, model, tokenizer, collator, config):
     model.eval()
     model.to(device)
 
-    special_tokens_dict = {token:token_id for token,token_id in zip(tokenizer.additional_special_tokens, tokenizer.additional_special_tokens_ids)}
-    cls_position_tokens = [
-        ["<|offY|>","<|offN|>"],
-        ["<|intY|>","<|intN|>"],
-        ["<|sexY|>","<|sexN|>"],
-        ["<|grpY|>","<|grpN|>"],
-        ["<|ingrpY|>","<|ingrpN|>"]
+    allowed_tokens = [
+        "<|offY|><|offN|>",
+        "<|intY|><|intN|>",
+        "<|sexY|><|sexN|>",
+        "<|grpY|><|grpN|>",
+        "<|ingrpY|><|ingrpN|>",
     ]
-    cls_tokens = [special_tokens_dict[token] for pos_tokens in cls_position_tokens for token in pos_tokens]
-    cls_tokens = [[cls_tokens[i], cls_tokens[i+1]] for i in range(len(cls_tokens))[::2]]
+    cls_tokens = tokenizer(allowed_tokens)["input_ids"]
+    pos_cls_tokens = tokenizer("<|offY|><|intY|><|sexY|><|grpY|><|ingrpY|>")[
+        "input_ids"
+    ]
 
     params = {
         "model": model,
         "tokenizer": tokenizer,
         "collator": collator,
         "cls_tokens": cls_tokens,
-        "pos_cls_tokens": [tokens[0] for tokens in cls_tokens],
+        "pos_cls_tokens": pos_cls_tokens,
         "gen_cfg": config.model["generation_params"],
         "device": device,
     }

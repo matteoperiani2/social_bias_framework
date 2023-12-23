@@ -1,21 +1,17 @@
 from collections import Counter
 import evaluate
 import matplotlib.pyplot as plt
-from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix, f1_score
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 from .text_similarity import TextSimilarity
 from rouge import Rouge
-import nltk
-from nltk.tokenize import word_tokenize
-from gensim.models import KeyedVectors
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 from nltk.corpus import stopwords
-nltk.download('stopwords')
-nltk.download('punkt')
 
 def evaluate_classification(labels, predictions, cls_columns):
+    f1 = evaluate.load("f1")
     f1_scores = dict()
     for lbls, preds, cols in zip(labels, predictions, cls_columns, strict=True):
-        score = f1_score(lbls[lbls != -1], preds[lbls != -1], average='binary')
+        score = f1.compute(predictions=preds[lbls != -1], references=lbls[lbls != -1])['f1']
         f1_scores[cols] = score
 
     return f1_scores
@@ -23,13 +19,15 @@ def evaluate_classification(labels, predictions, cls_columns):
 
 def evaluate_generation(data, config):
     rouge = Rouge(metrics=["rouge-l"], stats='f')
-    stop_words = set(stopwords.words('english'))    
-    word_vectors = KeyedVectors.load_word2vec_format(config.wmd_model, binary=True)
+
+    # rouge = evaluate.load("rouge")
+    # bleu = evaluate.load("bleu")
+    # similarity = TextSimilarity(config["embedding_model"])
+    # stop_words = stopwords.words('english')
+    # model = api.load('word2vec-google-news-300')
 
     params = {
         'rouge': rouge,
-        'stop_words': stop_words,
-        'word_vectors': word_vectors,
         'similarity': None
     }
 
@@ -43,7 +41,7 @@ def evaluate_generation(data, config):
     return data
 
 
-def compute_scores(data, rouge, stop_words, word_vectors, similarity):
+def compute_scores(data, rouge, similarity):
     group_scores = {}
     stereotype_score = {}
 
@@ -56,16 +54,8 @@ def compute_scores(data, rouge, stop_words, word_vectors, similarity):
                         smoothing_function=SmoothingFunction().method1
             ) for lbl in data['group'] if lbl is not None 
         ]
-        group_scores['wmd'] = [
-            word_vectors.wmdistance(
-                _preprocess_text_for_wmd(data['group_preds'], stop_words),
-                _preprocess_text_for_wmd(lbl, stop_words)
-            ) for lbl in data['group'] if lbl is not None 
-        ]
     else:
         group_scores['rouge'] = None
-        group_scores['bleu'] = None
-        group_scores['wmd'] = None
 
     if data['stereotype'] != None and data['stereotype_preds'] != '':
         stereotype_score['rouge'] = [rouge.get_scores(data['stereotype_preds'], lbl)[0]['rouge-l']['f'] for lbl in data['stereotype'] if lbl is not None]
@@ -76,26 +66,14 @@ def compute_scores(data, rouge, stop_words, word_vectors, similarity):
                         smoothing_function=SmoothingFunction().method1
             ) for lbl in data['stereotype'] if lbl is not None 
         ]
-        stereotype_score['wmd'] = [
-            word_vectors.wmdistance(
-                _preprocess_text_for_wmd(data['stereotype_preds'], stop_words),
-                _preprocess_text_for_wmd(lbl, stop_words)
-            ) for lbl in data['stereotype'] if lbl is not None 
-        ]
+
     else:
         stereotype_score['rouge'] = None
-        stereotype_score['bleu'] = None
-        stereotype_score['wmd'] = None
 
     return {
         'group_scores': group_scores,
         'stereotype_scores': stereotype_score
     }
-
-def _preprocess_text_for_wmd(text, stop_words):
-    tokens = word_tokenize(text.lower())
-    tokens = [token for token in tokens if token.isalpha() and token not in stop_words]
-    return tokens
 
 
 def print_classification_results(

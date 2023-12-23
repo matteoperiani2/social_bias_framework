@@ -27,6 +27,8 @@ if __name__ == "__main__":
         tokenizer = train_helper.make_tokenizer()
         model = train_helper.make_model()
 
+        # tokenizer.encode('ciao')
+
         # Make the data
         train_dataset = train_helper.get_data("train")
         val_dataset = train_helper.get_data("val")
@@ -45,8 +47,7 @@ if __name__ == "__main__":
         scheduler = train_helper.make_scheduler(
             optimizer, steps_per_epoch=len(train_dataloader)
         )
-
-        loss_fn = train_helper.make_loss(tokenizer)
+        loss_fn = train_helper.make_loss(tokenizer, init_weight=True)
 
         train(
             model,
