@@ -507,7 +507,7 @@ def aggregate_data(config, verbose=True):
 
 def tokenize_data(
     config,
-    task: Union[Literal["train"], Literal["inference"]],
+    task: Union[Literal["train"], Literal["inference"]] = "train",
     use_aggregate=False,
     verbose=True,
 ):
@@ -523,7 +523,7 @@ def tokenize_data(
     print_if_verbose("Tokenizing data ...", verbose=verbose)
 
     remove_columns = []
-    if task == "train":
+    if config.model.name == "gpt2" and task == "train":
         data.pop("test")
         remove_columns = data["train"].column_names
     data = data.map(
@@ -551,12 +551,18 @@ def print_tokenized_dataset(data, config, n=10):
     tokenizer = helper.make_tokenizer()
     examples = data.shuffle().select(range(n))
     for example in examples:
-        for key, value in example.items():
-            print(f"{key}:", value)
-            if key != "attention_mask":
-                value = [
-                    token if token != -100 else tokenizer.pad_token_id
-                    for token in value
-                ]
-                print(f"{key}:", tokenizer.decode(value, skip_special_tokens=False))
+        print_tokenized_item(example, tokenizer)
         print("-" * 50)
+
+
+def print_tokenized_item(example, tokenizer, print_shape=False):
+    shape = ""
+    for key, value in example.items():
+        if print_shape:
+            shape = f" ({value.shape})"
+        print(f"{key}{shape}:", value)
+        if "ids" in key or key == "labels":
+            value = [
+                token if token != -100 else tokenizer.pad_token_id for token in value
+            ]
+            print(f"{key}:", tokenizer.decode(value, skip_special_tokens=False))

@@ -12,11 +12,6 @@ from .model import GPT2SBF, loss
 class GPT2Helper(ModelHelper):
     def __init__(self, config: dict):
         super().__init__(config)
-        self.model = None
-        self.tokenizer = None
-        self.data = None
-        self.collator = None
-        self.loss = None
 
     def get_data(self, split, aggregated=False):
         if not aggregated:
@@ -43,25 +38,24 @@ class GPT2Helper(ModelHelper):
             print(" -", tokenizer.all_special_tokens)
             print(" -", tokenizer(tokenizer.all_special_tokens)["input_ids"])
 
-        self.tokenizer = tokenizer
         return tokenizer
 
-    def make_model(self):
-        self.model = GPT2SBF.from_pretrained(self.config["model"]["checkpoint_name"])
+    def make_model(self, tokenizer):
+        model = GPT2SBF.from_pretrained(self.config["model"]["checkpoint_name"])
         # init new embedding
-        new_tokens = len(self.tokenizer) - self.model.config.vocab_size
-        self.model.resize_token_embeddings(len(self.tokenizer))
-        self.__init_new_tokens_embeddings(new_tokens)
-        # self.__init_lm_bias()
+        new_tokens = len(tokenizer) - model.config.vocab_size
+        self.model.resize_token_embeddings(len(tokenizer))
+        self.__init_new_tokens_embeddings(model, new_tokens)
+        # self.__init_lm_bias(model, tokenizer)
 
-        self.model.transformer.config.pad_token_id = self.tokenizer.pad_token_id
-        self.model.transformer.config.sep_token_id = self.tokenizer.sep_token_id
-        self.model.transformer.config.eos_token_id = self.tokenizer.eos_token_id
+        model.transformer.config.pad_token_id = tokenizer.pad_token_id
+        model.transformer.config.sep_token_id = tokenizer.sep_token_id
+        model.transformer.config.eos_token_id = tokenizer.eos_token_id
 
-        return self.model
+        return model
 
-    def __init_new_tokens_embeddings(self, new_tokens):
-        params = self.model.state_dict()
+    def __init_new_tokens_embeddings(self, model, new_tokens):
+        params = model.state_dict()
         embeddings = params["transformer.wte.weight"]
         pre_expansion_embeddings = embeddings[:-new_tokens, :]
         mu = torch.mean(pre_expansion_embeddings, dim=0)
@@ -79,18 +73,18 @@ class GPT2Helper(ModelHelper):
         new_embeddings = torch.cat((pad_embedding, other_embes), dim=0)  # (12, 768)
         embeddings[-new_tokens:, :] = new_embeddings
         params["transformer.wte.weight"][-new_tokens:, :] = new_embeddings
-        self.model.load_state_dict(params)
+        model.load_state_dict(params)
 
-    def __init_lm_bias(self):
-        params = self.model.state_dict()
+    def __init_lm_bias(self, model, tokenizer):
+        params = model.state_dict()
         lm_bias = params["lm_logits_bias"]
-        lm_bias[..., self.tokenizer.pad_token_id] = torch.finfo(torch.float16).min
+        lm_bias[..., tokenizer.pad_token_id] = torch.finfo(torch.float16).min
         for cls_class, freq in self.config["model"]["classification_pos_freq"].items():
-            idx = self.tokenizer.encode(f"<|{cls_class}|>")[0]
+            idx = tokenizer.encode(f"<|{cls_class}|>")[0]
             lm_bias[..., idx] = torch.log(torch.tensor(freq))
             lm_bias[..., idx + 1] = torch.log(torch.tensor(1 - freq))
         params["lm_logits_bias"][..., :] = lm_bias
-        self.model.load_state_dict(params)
+        model.load_state_dict(params)
 
     def make_loss(self):
         return loss

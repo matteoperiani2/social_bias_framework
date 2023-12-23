@@ -162,3 +162,5 @@ data/
 checkpoints/
 
 debug.py
+generate_train_pickle.py
+scripts/generate_notebook.py

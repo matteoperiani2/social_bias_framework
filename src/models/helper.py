@@ -17,16 +17,16 @@ class ModelHelper(ABC):
         self.config = config
         self.model_config = config["model"]
 
-    @abstractmethod
-    def make_model(self) -> torch.nn.Module:
-        raise NotImplementedError()
-
     def make_tokenizer(self) -> transformers.PreTrainedTokenizerBase:
         tokenizer = AutoTokenizer.from_pretrained(self.model_config["checkpoint_name"])
         return tokenizer
 
+    @abstractmethod
+    def make_model(self, tokenizer) -> torch.nn.Module:
+        raise NotImplementedError()
+
     def get_data(self, split) -> datasets.Dataset:
-        path = os.path.join(self.config["data"], split)
+        path = os.path.join(self.config["data"]["train"], split)
         data = datasets.load_from_disk(path)
         return data
 
