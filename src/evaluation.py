@@ -29,15 +29,15 @@ def evaluate_generation(data, config):
     # word_vectors = KeyedVectors.load_word2vec_format(config.wmd_model, binary=True)
     similarity = TextSimilarity(config.embedding_model)
 
-    all_groups_or_minorities = set()
-    for cols in ['group', 'stereotype', 'group_preds', 'stereotype_preds']:
-        all_groups_or_minorities.update(*[v for v in data[cols] if v is not None and v != ''])
+    # all_groups_or_minorities = set()
+    # for cols in ['group', 'stereotype', 'group_preds', 'stereotype_preds']:
+    #     all_groups_or_minorities.update(*[v for v in data[cols] if v is not None and v != ''])
 
-    emeddings = dict(zip(all_groups_or_minorities, similarity.generate_embeddings(all_groups_or_minorities)))
+    # emeddings = dict(zip(all_groups_or_minorities, similarity.generate_embeddings(all_groups_or_minorities)))
 
     params = {
         'rouge': rouge,
-        'emeddings': emeddings
+        'emeddings': None
     }
 
     data = data.map(
@@ -63,10 +63,10 @@ def compute_generative_scores(data, rouge, emeddings):
                         smoothing_function=SmoothingFunction().method1
             ) for lbl in data['group'] if lbl is not None 
         ]
-        group_scores['similarity'] = [
-            cosine_similarity(emeddings[data['group_preds']], emeddings[lbl])
-            for lbl in data['group'] if lbl is not None 
-        ]
+        # group_scores['similarity'] = [
+        #     cosine_similarity(emeddings[data['group_preds']], emeddings[lbl])
+        #     for lbl in data['group'] if lbl is not None 
+        # ]
         # group_scores['wmd'] = [
         #     word_vectors.wmdistance(
         #         [token for token in data['group_preds'].lower().split() if token not in stop_words],
@@ -76,7 +76,7 @@ def compute_generative_scores(data, rouge, emeddings):
     else:
         group_scores['rouge'] = None
         group_scores['bleu'] = None
-        stereotype_score['similarity'] = None
+        # stereotype_score['similarity'] = None
         # group_scores['wmd'] = None
 
     if data['stereotype'] != None and data['stereotype_preds'] != '':
@@ -88,10 +88,10 @@ def compute_generative_scores(data, rouge, emeddings):
                         smoothing_function=SmoothingFunction().method1
             ) for lbl in data['stereotype'] if lbl is not None 
         ]
-        stereotype_score['similarity'] = [
-            cosine_similarity(emeddings[data['stereotype_preds']], emeddings[lbl])
-            for lbl in data['stereotype'] if lbl is not None 
-        ]
+        # stereotype_score['similarity'] = [
+        #     cosine_similarity(emeddings[data['stereotype_preds']], emeddings[lbl])
+        #     for lbl in data['stereotype'] if lbl is not None 
+        # ]
         # stereotype_score['wmd'] = [
         #     word_vectors.wmdistance(
         #         [token for token in data['stereotype_preds'].lower().split() if token not in stop_words],
@@ -101,7 +101,7 @@ def compute_generative_scores(data, rouge, emeddings):
     else:
         stereotype_score['rouge'] = None
         stereotype_score['bleu'] = None
-        stereotype_score['similarity'] = None
+        # stereotype_score['similarity'] = None
         # stereotype_score['wmd'] = None
 
     return {
