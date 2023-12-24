@@ -1,16 +1,18 @@
-from collections import Counter
-import evaluate
-import matplotlib.pyplot as plt
-from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix, f1_score
+import numpy as np
+from src.plot import plot_classification_cm
 from .text_similarity import TextSimilarity
+
+from sklearn.metrics import f1_score
 from rouge import Rouge
-import nltk
-from nltk.tokenize import word_tokenize
-from gensim.models import KeyedVectors
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
-from nltk.corpus import stopwords
-nltk.download('stopwords')
-nltk.download('punkt')
+from sklearn.metrics.pairwise import cosine_similarity
+
+# import nltk
+# from nltk.tokenize import word_tokenize
+# from gensim.models import KeyedVectors
+# from nltk.corpus import stopwords
+# nltk.download('stopwords')
+# nltk.download('punkt')
 
 def evaluate_classification(labels, predictions, cls_columns):
     f1_scores = dict()
@@ -23,18 +25,23 @@ def evaluate_classification(labels, predictions, cls_columns):
 
 def evaluate_generation(data, config):
     rouge = Rouge(metrics=["rouge-l"], stats='f')
-    stop_words = set(stopwords.words('english'))    
-    word_vectors = KeyedVectors.load_word2vec_format(config.wmd_model, binary=True)
+    # stop_words = set(stopwords.words('english'))    
+    # word_vectors = KeyedVectors.load_word2vec_format(config.wmd_model, binary=True)
+    similarity = TextSimilarity(config.embedding_model)
+
+    all_groups_or_minorities = set()
+    for cols in ['group', 'stereotype', 'group_preds', 'stereotype_preds']:
+        all_groups_or_minorities.update(*[v for v in data[cols] if v is not None and v != ''])
+
+    emeddings = dict(zip(all_groups_or_minorities, similarity.generate_embeddings(all_groups_or_minorities)))
 
     params = {
         'rouge': rouge,
-        'stop_words': stop_words,
-        'word_vectors': word_vectors,
-        'similarity': None
+        'emeddings': emeddings
     }
 
     data = data.map(
-        compute_scores,
+        compute_generative_scores,
         load_from_cache_file=False,
         fn_kwargs=params,
         batched=False
@@ -43,7 +50,7 @@ def evaluate_generation(data, config):
     return data
 
 
-def compute_scores(data, rouge, stop_words, word_vectors, similarity):
+def compute_generative_scores(data, rouge, emeddings):
     group_scores = {}
     stereotype_score = {}
 
@@ -56,16 +63,21 @@ def compute_scores(data, rouge, stop_words, word_vectors, similarity):
                         smoothing_function=SmoothingFunction().method1
             ) for lbl in data['group'] if lbl is not None 
         ]
-        group_scores['wmd'] = [
-            word_vectors.wmdistance(
-                _preprocess_text_for_wmd(data['group_preds'], stop_words),
-                _preprocess_text_for_wmd(lbl, stop_words)
-            ) for lbl in data['group'] if lbl is not None 
+        group_scores['similarity'] = [
+            cosine_similarity(emeddings[data['group_preds']], emeddings[lbl])
+            for lbl in data['group'] if lbl is not None 
         ]
+        # group_scores['wmd'] = [
+        #     word_vectors.wmdistance(
+        #         [token for token in data['group_preds'].lower().split() if token not in stop_words],
+        #         [token for token in lbl.lower().split() if token not in stop_words]
+        #     ) for lbl in data['group'] if lbl is not None 
+        # ]
     else:
         group_scores['rouge'] = None
         group_scores['bleu'] = None
-        group_scores['wmd'] = None
+        stereotype_score['similarity'] = None
+        # group_scores['wmd'] = None
 
     if data['stereotype'] != None and data['stereotype_preds'] != '':
         stereotype_score['rouge'] = [rouge.get_scores(data['stereotype_preds'], lbl)[0]['rouge-l']['f'] for lbl in data['stereotype'] if lbl is not None]
@@ -76,26 +88,45 @@ def compute_scores(data, rouge, stop_words, word_vectors, similarity):
                         smoothing_function=SmoothingFunction().method1
             ) for lbl in data['stereotype'] if lbl is not None 
         ]
-        stereotype_score['wmd'] = [
-            word_vectors.wmdistance(
-                _preprocess_text_for_wmd(data['stereotype_preds'], stop_words),
-                _preprocess_text_for_wmd(lbl, stop_words)
-            ) for lbl in data['stereotype'] if lbl is not None 
+        stereotype_score['similarity'] = [
+            cosine_similarity(emeddings[data['stereotype_preds']], emeddings[lbl])
+            for lbl in data['stereotype'] if lbl is not None 
         ]
+        # stereotype_score['wmd'] = [
+        #     word_vectors.wmdistance(
+        #         [token for token in data['stereotype_preds'].lower().split() if token not in stop_words],
+        #         [token for token in lbl.lower().split() if token not in stop_words]
+        #     ) for lbl in data['stereotype'] if lbl is not None 
+        # ]
     else:
         stereotype_score['rouge'] = None
         stereotype_score['bleu'] = None
-        stereotype_score['wmd'] = None
+        stereotype_score['similarity'] = None
+        # stereotype_score['wmd'] = None
 
     return {
         'group_scores': group_scores,
         'stereotype_scores': stereotype_score
     }
 
-def _preprocess_text_for_wmd(text, stop_words):
-    tokens = word_tokenize(text.lower())
-    tokens = [token for token in tokens if token.isalpha() and token not in stop_words]
-    return tokens
+
+def aggregate_generation_results(group_scores, stereotype_scores):
+    group_rouge_scores = [max(scores['rouge']) for scores in group_scores if scores['rouge'] != None]
+    group_bleu_score = [max(scores['bleu']) for scores in group_scores if scores['bleu'] != None]
+    # group_sim_score = [max(scores['similarity']) for scores in group_scores if scores['similarity'] != None]
+    # group_wmd_score = [min(scores['wmd']) for scores in group_scores if scores['bleu'] != None]
+
+    stereotype_rouge_score = [max(scores['rouge']) for scores in stereotype_scores if scores['rouge'] != None]
+    stereotype_bleu_score = [max(scores['bleu']) for scores in stereotype_scores if scores['bleu'] != None]
+    # stereotype__sim_score = [max(scores['similarity']) for scores in stereotype_scores if scores['similarity'] != None]
+    # stereotype_wmd_score = [min(scores['wmd']) for scores in stereotype_scores if scores['bleu'] != None]
+
+    return {
+        'group_rouge': np.mean(group_rouge_scores),
+        'group_bleu': np.mean(group_bleu_score),
+        'stereotype_rouge': np.mean(stereotype_rouge_score),
+        'stereotype_bleu': np.mean(stereotype_bleu_score),
+    }
 
 
 def print_classification_results(
@@ -113,81 +144,10 @@ def print_classification_results(
         print(f"{type}: {score:.3f}")
 
     if show_cm:
-        plt.rcParams["font.size"] = "12"
-        _, axs = plt.subplots(1, 5, figsize=(35, 15))
-        for j in range(5):
-            lbls = labels[j]
-            preds = predictions[j]
-            cm = confusion_matrix(lbls[lbls != -1], preds[lbls != -1], normalize='all')
-            cm_disp = ConfusionMatrixDisplay(confusion_matrix=cm)
-            cm_disp.plot(
-                ax=axs[j],
-                cmap="Blues",
-                values_format="0.2f",
-                colorbar=False,
-                xticks_rotation=90,
-            )
-            axs[j].set_title(f"{annotation_type[j]}")
-            axs[j].set(xlabel=None)
-            axs[j].set(ylabel=None)
-        plt.show()
+        plot_classification_cm(labels, predictions, annotation_type)
 
 
-def print_generations_results(
-    f1_minorities,
-    f1_stereotypes,
-    min_labels,
-    min_pred,
-    sterotype_labels,
-    sterotype_preds,
-    show_dist=True,
-):
-    print(f"Minority Rouge-L F1 score: {f1_minorities:.3f}")
-    print(f"Stereotype Rouge-L F1 score: {f1_stereotypes:.3f}")
-    print()
-    if show_dist:
-        plt.rcParams["font.size"] = "8"
-        plot_minority_distribution(
-            min_pred, min_labels, sterotype_labels, sterotype_preds
-        )
-        plt.show()
-
-
-def plot_minority_distribution(min_pred, min_labels, sterotype_labels, sterotype_preds):
-    type = ["Minority", "Stereotype"]
-    name = ["predictions", "labels"]
-    fig, axes = plt.subplots(1, 4, figsize=(15, 4))
-    for i, (data, ax) in enumerate(
-        zip(
-            [min_pred, min_labels, sterotype_labels, sterotype_preds],
-            axes.ravel(),
-            strict=True,
-        )
-    ):
-        _plot_word_bar(data, ax=ax)
-        ax.set_title(f"{type[i//2]} {name[i%2]}")
-
-
-def _plot_word_bar(data, ax, n_words=10):
-    if isinstance(data[0], list):
-        topic_words = [y.lower() if y != "" else "''" for x in data for y in x]
-    else:
-        topic_words = [x.lower() if x != "" else "''" for x in data]
-    word_count_dict = dict(Counter(topic_words))
-    popular_words = sorted(word_count_dict, key=word_count_dict.get, reverse=True)
-    popular_words_nonstop = [
-        w for w in popular_words if w not in stopwords.words("english")
-    ]
-    total = sum([word_count_dict[w] for w in reversed(popular_words_nonstop)])
-    ax.barh(
-        range(n_words),
-        [
-            word_count_dict[w] / total
-            for w in reversed(popular_words_nonstop[0:n_words])
-        ],
-    )
-    ax.set_yticks(
-        [x + 0.5 for x in range(n_words)], reversed(popular_words_nonstop[0:n_words])
-    )
-    for i in ax.containers:
-        ax.bar_label(i, padding=2)
+def print_generations_results(results):
+    for score_name, score in results.items():
+        s_class, s_type = score_name.split('_')
+        print(f"{s_class.title()} {s_type.title()} score:{score:.3f}")

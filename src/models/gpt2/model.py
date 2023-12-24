@@ -15,13 +15,11 @@ from .logit_processor import GPT2RestrictTokensLogitsProcessor
 
 class GPT2SBF(transformers.GPT2PreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
-    _keys_to_ignore_on_load_missing = ["lm_logits_bias"]
 
     def __init__(self, config):
         super().__init__(config)
         self.transformer = transformers.GPT2Model(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.register_buffer("lm_logits_bias", torch.zeros((1, config.vocab_size)))
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -31,10 +29,6 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
 
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
-
-    def resize_token_embeddings(self, new_num_tokens: int | None = None) -> Embedding:
-        self.register_buffer("lm_logits_bias", torch.zeros((1, new_num_tokens)))
-        return super().resize_token_embeddings(new_num_tokens)
 
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs
@@ -130,7 +124,6 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
         hidden_states = transformer_outputs[0]
 
         lm_logits = self.lm_head(hidden_states)
-        lm_logits = lm_logits + self.lm_logits_bias.to(lm_logits.device)
 
         if not return_dict:
             return (lm_logits,) + transformer_outputs[1:]
