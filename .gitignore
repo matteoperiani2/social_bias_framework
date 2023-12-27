@@ -160,5 +160,6 @@ wandb/
 data/
 !data/prediction/
 checkpoints/
+kaggle_lib/
 
 debug.py
