@@ -6,7 +6,7 @@ import transformers
 
 from ..helper import ModelHelper
 from .data_collator import GPT2DataCollator
-from .model import GPT2SBF, loss
+from .model import GPT2SBF, GPT2Loss
 
 
 class GPT2Helper(ModelHelper):
@@ -86,5 +86,5 @@ class GPT2Helper(ModelHelper):
         params["lm_logits_bias"][..., :] = lm_bias
         model.load_state_dict(params)
 
-    def make_loss(self):
-        return loss
+    def make_loss(self, tokenizer):
+        return GPT2Loss(tokenizer, self.config)

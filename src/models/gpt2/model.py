@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
-from torch.nn.modules import Embedding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 from ...utils import filter_model_inputs, pad_batch
@@ -15,13 +14,11 @@ from .logit_processor import GPT2RestrictTokensLogitsProcessor
 
 class GPT2SBF(transformers.GPT2PreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
-    _keys_to_ignore_on_load_missing = ["lm_logits_bias"]
 
     def __init__(self, config):
         super().__init__(config)
         self.transformer = transformers.GPT2Model(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.register_buffer("lm_logits_bias", torch.zeros((1, config.vocab_size)))
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -31,10 +28,6 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
 
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
-
-    def resize_token_embeddings(self, new_num_tokens: int | None = None) -> Embedding:
-        self.register_buffer("lm_logits_bias", torch.zeros((1, new_num_tokens)))
-        return super().resize_token_embeddings(new_num_tokens)
 
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs
@@ -130,7 +123,6 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
         hidden_states = transformer_outputs[0]
 
         lm_logits = self.lm_head(hidden_states)
-        lm_logits = lm_logits + self.lm_logits_bias.to(lm_logits.device)
 
         if not return_dict:
             return (lm_logits,) + transformer_outputs[1:]
@@ -162,15 +154,35 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
         )
 
 
-def loss(outputs, data):
-    logits = outputs.logits.transpose(-1, -2)
-    labels = data["labels"]
-    loss = F.cross_entropy(logits, labels, reduction="none")  # (BATCH, SEQ_LEN)
+class GPT2Loss(nn.Module):
+    def __init__(self, tokenizer, config) -> None:
+        super(GPT2Loss, self).__init__()
+        self.weight = torch.ones(len(tokenizer))
+        if config["model"].get("weight_loss", False):
+            special_tokens_dict = dict(
+                zip(
+                    tokenizer.all_special_tokens, tokenizer.all_special_ids, strict=True
+                )
+            )
+            for cls_name, freq in config["model"]["classification_pos_freq"].items():
+                pos_id = special_tokens_dict[f"<|{cls_name}Y|>"]
+                neg_id = special_tokens_dict[f"<|{cls_name}N|>"]
+                self.weight[pos_id] = 1 / freq
+                self.weight[neg_id] = 1 / (1 - freq)
 
-    n_valid_tokens = torch.sum(labels != -100, dim=-1)  # (BATCH, )
-    loss = torch.sum(loss, dim=-1) / torch.clamp(n_valid_tokens, min=1e-7)  # (BATCH, )
-    loss = torch.mean(loss)  # (1,)
-    return loss
+    def forward(self, outputs, data):
+        logits = outputs.logits.transpose(-1, -2)
+        labels = data["labels"]
+        loss = F.cross_entropy(
+            logits, labels, reduction="none", weight=self.weight.to(logits.device)
+        )  # (BATCH, SEQ_LEN)
+
+        n_valid_tokens = torch.sum(labels != -100, dim=-1)  # (BATCH, )
+        loss = torch.sum(loss, dim=-1) / torch.clamp(
+            n_valid_tokens, min=1e-7
+        )  # (BATCH, )
+        loss = torch.mean(loss)  # (1,)
+        return loss
 
 
 def generate_predictions(data, model, tokenizer, collator, config):
@@ -178,16 +190,27 @@ def generate_predictions(data, model, tokenizer, collator, config):
     model.eval()
     model.to(device)
 
-    allowed_tokens = [
-        "<|offY|><|offN|>",
-        "<|intY|><|intN|>",
-        "<|sexY|><|sexN|>",
-        "<|grpY|><|grpN|>",
-        "<|ingrpY|><|ingrpN|>",
+    special_tokens_dict = dict(
+        zip(
+            tokenizer.additional_special_tokens,
+            tokenizer.additional_special_tokens_ids,
+            strict=True,
+        )
+    )
+    cls_position_tokens = [
+        ["<|offY|>", "<|offN|>"],
+        ["<|intY|>", "<|intN|>"],
+        ["<|sexY|>", "<|sexN|>"],
+        ["<|grpY|>", "<|grpN|>"],
+        ["<|ingrpY|>", "<|ingrpN|>"],
     ]
-    cls_tokens = tokenizer(allowed_tokens)["input_ids"]
-    pos_cls_tokens = tokenizer("<|offY|><|intY|><|sexY|><|grpY|><|ingrpY|>")[
-        "input_ids"
+    cls_tokens = [
+        special_tokens_dict[token]
+        for pos_tokens in cls_position_tokens
+        for token in pos_tokens
+    ]
+    cls_tokens = [
+        [cls_tokens[i], cls_tokens[i + 1]] for i in range(len(cls_tokens))[::2]
     ]
 
     params = {
@@ -195,28 +218,31 @@ def generate_predictions(data, model, tokenizer, collator, config):
         "tokenizer": tokenizer,
         "collator": collator,
         "cls_tokens": cls_tokens,
-        "pos_cls_tokens": pos_cls_tokens,
+        "pos_cls_tokens": [tokens[0] for tokens in cls_tokens],
         "gen_cfg": config.model["generation_params"],
         "device": device,
     }
 
-    batch_size = config.model.get(
-        "generation_batch_size", config.model["val_batch_size"]
+    with torch.no_grad():
+        predictions = data.map(
+            _generate_batch_predicitons,
+            fn_kwargs=params,
+            batched=True,
+            batch_size=config.model["generate_batch_size"],
+            remove_columns=["input_ids", "attention_mask"],
+            load_from_cache_file=False,
+        )
+
+    predictions = predictions.map(
+        _aggregate_labels,
+        load_from_cache_file=False,
+        fn_kwargs={"cols": config.classification_columns},
+        remove_columns=config.classification_columns,
     )
-    try:
-        with torch.no_grad():
-            predictions = data.map(
-                _generate_batch_predicitons,
-                fn_kwargs=params,
-                batched=True,
-                batch_size=batch_size,
-                remove_columns=["input_ids", "attention_mask"],
-                load_from_cache_file=False,
-            )
-    finally:
-        model.cpu()
-        gc.collect()
-        torch.cuda.empty_cache()
+
+    model.cpu()
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return predictions
 
@@ -249,7 +275,7 @@ def _generate_batch_predicitons(
 
     return {
         "cls_preds": cls_preds,
-        "minority_preds": minorities_preds,
+        "group_preds": minorities_preds,
         "stereotype_preds": stereotypes_preds,
     }
 
@@ -278,7 +304,7 @@ def _process_predictions(tokenizer, predictions, positive_cls_tokens):
         ]
 
         # if the model predict not offensive or not to a group, ignore the generation
-        if pred[0] == 0 or pred[-2] == 0:
+        if bin_cls_preds[0] == 0 or bin_cls_preds[-2] == 0:
             bin_cls_preds[-2] = 0
             bin_cls_preds[-1] = 0
             class_preds.append(bin_cls_preds)
@@ -306,3 +332,10 @@ def _process_predictions(tokenizer, predictions, positive_cls_tokens):
     stereotype_preds = tokenizer.batch_decode(stereotype_preds)
 
     return class_preds, minority_preds, stereotype_preds
+
+
+def _aggregate_labels(data, cols):
+    values = [
+        int(v >= 0.5) if v is not None else -1 for k, v in data.items() if k in cols
+    ]
+    return {"labels": values}

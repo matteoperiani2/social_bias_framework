@@ -57,5 +57,5 @@ class BartHelper(ModelHelper):
         collator = BartDataCollator(tokenizer=tokenizer, model=model)
         return collator
 
-    def make_loss(self):
+    def make_loss(self, tokenizer):
         return loss(self.config)

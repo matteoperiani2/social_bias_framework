@@ -11,6 +11,7 @@ from rouge import Rouge
 # nltk.download('punkt')
 from sklearn.metrics import f1_score
 
+from .plot import plot_classification_cm
 from .utils import binarize
 
 
@@ -188,6 +189,22 @@ def aggregate_generation_results(group_scores, stereotype_scores):
         "stereotype_rouge": np.mean(stereotype_rouge_score),
         "stereotype_bleu": np.mean(stereotype_bleu_score),
     }
+
+
+def print_classification_results(labels, predictions, results, show_cm=True):
+    annotation_type = [
+        "Offensive",
+        "Intentional",
+        "Sex/Lewd content",
+        "Group targetted",
+        "Speaker in group",
+    ]
+
+    for type, score in zip(annotation_type, results.values(), strict=True):
+        print(f"{type}: {score:.3f}")
+
+    if show_cm:
+        plot_classification_cm(labels, predictions, annotation_type)
 
 
 def print_generations_results(results):
