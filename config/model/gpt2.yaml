@@ -7,8 +7,8 @@ learning_rate: 1e-5
 padding_side: left
 warmup_fraction: 0.2
 checkpoint_dir: checkpoints/gpt2
-accumulation_steps: 1
 generate_batch_size: 16
+weight_loss: True
 
 special_tokens:
   pad_token: <|pad|>
@@ -38,14 +38,12 @@ cls_token_map:
   - 0: <|ingrpN|>
     1: <|ingrpY|>
 
-
 classification_pos_freq:
-  'off': 0.485
-  int: 0.515
-  sex: 0.085
-  grp: 0.656
-  ingrp: 0.023
-
+  offY:  0.485
+  intY: 0.515
+  sexY: 0.085
+  grpY: 0.656
+  ingrpY: 0.023
 
 generation_params:
   max_new_tokens: 100

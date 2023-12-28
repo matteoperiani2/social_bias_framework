@@ -47,6 +47,10 @@ def from_pandas(df: pd.DataFrame, key_name="split") -> DatasetDict:
     return data
 
 
+def binarize(value: float, threshold=0.5) -> int:
+    return int(value > threshold) if pd.notnull(value) else None
+
+
 def flatten(list_of_lists: List[List]):
     return [item for list in list_of_lists for item in list]
 

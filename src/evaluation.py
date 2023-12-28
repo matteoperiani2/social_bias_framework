@@ -1,11 +1,7 @@
 import numpy as np
-from src.plot import plot_classification_cm
-from .text_similarity import TextSimilarity
-
-from sklearn.metrics import f1_score
+import pandas as pd
+from nltk.translate.bleu_score import SmoothingFunction, corpus_bleu
 from rouge import Rouge
-from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
-from sklearn.metrics.pairwise import cosine_similarity
 
 # import nltk
 # from nltk.tokenize import word_tokenize
@@ -13,125 +9,189 @@ from sklearn.metrics.pairwise import cosine_similarity
 # from nltk.corpus import stopwords
 # nltk.download('stopwords')
 # nltk.download('punkt')
+from sklearn.metrics import f1_score
+
+from .plot import plot_classification_cm
+from .utils import binarize
+
+
+def tune_threshold(y_true, y_logits, threshold_range=(0.1, 0.9), threshold_step=0.01):
+    """
+    Tune the threshold to maximize F1 score.
+
+    Parameters:
+    - y_true (array-like): True binary labels.
+    - y_logits (array-like): Predicted probabilities or scores.
+    - threshold_range (tuple): Range of thresholds to search within.
+    - threshold_step (float): Step size for searching thresholds.
+
+    Returns:
+    - float: Optimal threshold that maximizes F1 score.
+    """
+    thresholds = np.arange(
+        threshold_range[0], threshold_range[1] + threshold_step, threshold_step
+    )
+    logit_thresholds = np.log(thresholds) - np.log(1 - thresholds)
+    best_f1 = 0
+    optimal_threshold = threshold_range[0]
+
+    for i, threshold in enumerate(logit_thresholds):
+        y_pred = (y_logits >= threshold).astype(int)
+        current_f1 = f1_score(
+            y_true[y_true != -1], y_pred[y_true != -1], average="binary"
+        )
+
+        if current_f1 > best_f1:
+            best_f1 = current_f1
+            optimal_threshold = thresholds[i]
+
+    return optimal_threshold
+
+
+def tune_cls_thresholds(data, config, threshold_range=(0.1, 0.9), threshold_step=0.01):
+    """
+    Tune the thresholds to maximize F1 score of each cls label.
+    """
+
+    def apply_threshold(cls_column):
+        feature = np.asarray(data["cls_logits"])[
+            ..., config.classification_columns.index(cls_column)
+        ]
+        threshold = optimal_thresholds[cls_column]
+        threshold = np.log(threshold) - np.log(1 - threshold)
+        return (feature >= threshold).astype(int)
+
+    optimal_thresholds = {}
+    for i, cls_col in enumerate(config.classification_columns):
+        true_labels = np.asarray([binarize(v) for v in data[cls_col]])
+        true_labels = np.where(pd.notnull(true_labels), true_labels, -1).astype(int)
+        predicted_scores = np.asarray(data["cls_logits"])[..., i]
+        if cls_col in ["vs_group", "in_group"]:
+            offensive = apply_threshold("offensive")
+            predicted_scores[offensive == 0] = -np.inf
+        if cls_col == "in_group":
+            vs_group = apply_threshold("vs_group")
+            predicted_scores[vs_group == 0] = -np.inf
+
+        optimal_threshold = tune_threshold(
+            true_labels,
+            predicted_scores,
+            threshold_range=threshold_range,
+            threshold_step=threshold_step,
+        )
+        optimal_thresholds[cls_col] = optimal_threshold
+    return optimal_thresholds
+
 
 def evaluate_classification(labels, predictions, cls_columns):
-    f1_scores = dict()
+    f1_scores = {}
     for lbls, preds, cols in zip(labels, predictions, cls_columns, strict=True):
-        score = f1_score(lbls[lbls != -1], preds[lbls != -1], average='binary')
+        score = f1_score(lbls[lbls != -1], preds[lbls != -1], average="binary")
         f1_scores[cols] = score
 
     return f1_scores
 
 
-def evaluate_generation(data, config):
-    rouge = Rouge(metrics=["rouge-l"], stats='f')
-    # stop_words = set(stopwords.words('english'))    
-    # word_vectors = KeyedVectors.load_word2vec_format(config.wmd_model, binary=True)
-    similarity = TextSimilarity(config.embedding_model)
+__rouge = Rouge(metrics=["rouge-l"], stats="f")
 
-    # all_groups_or_minorities = set()
-    # for cols in ['group', 'stereotype', 'group_preds', 'stereotype_preds']:
-    #     all_groups_or_minorities.update(*[v for v in data[cols] if v is not None and v != ''])
 
-    # emeddings = dict(zip(all_groups_or_minorities, similarity.generate_embeddings(all_groups_or_minorities)))
+def rouge(prediction, label):
+    return __rouge.get_scores(prediction, label)[0]["rouge-l"]["f"]
 
-    params = {
-        'rouge': rouge,
-        'emeddings': None
-    }
 
-    data = data.map(
-        compute_generative_scores,
-        load_from_cache_file=False,
-        fn_kwargs=params,
-        batched=False
+def bleu(prediction, label):
+    return corpus_bleu(
+        [[label]],
+        [prediction],
+        weights=(0.5, 0.5),
+        smoothing_function=SmoothingFunction().method1,
     )
-    
-    return data
 
 
-def compute_generative_scores(data, rouge, emeddings):
-    group_scores = {}
-    stereotype_score = {}
+def compute_metric(prediction, labels, metric):
+    return [metric(prediction, label) for label in labels if label is not None]
 
-    if data['group'] != None and data['group_preds'] != '':
-        group_scores['rouge'] = [rouge.get_scores(data['group_preds'], lbl)[0]['rouge-l']['f'] for lbl in data['group'] if lbl is not None]
-        group_scores['bleu'] = [
-            corpus_bleu([[lbl]],
-                        [data['group_preds']],
-                        weights=(0.5, 0.5),
-                        smoothing_function=SmoothingFunction().method1
-            ) for lbl in data['group'] if lbl is not None 
-        ]
-        # group_scores['similarity'] = [
-        #     cosine_similarity(emeddings[data['group_preds']], emeddings[lbl])
-        #     for lbl in data['group'] if lbl is not None 
-        # ]
-        # group_scores['wmd'] = [
-        #     word_vectors.wmdistance(
-        #         [token for token in data['group_preds'].lower().split() if token not in stop_words],
-        #         [token for token in lbl.lower().split() if token not in stop_words]
-        #     ) for lbl in data['group'] if lbl is not None 
-        # ]
+
+# def evaluate_generation(data, config):
+#     # stop_words = set(stopwords.words('english'))
+#     # word_vectors = KeyedVectors.load_word2vec_format(config.wmd_model, binary=True)
+#     similarity = TextSimilarity(config.embedding_model)
+
+#     # all_groups_or_minorities = set()
+#     # for cols in ['group', 'stereotype', 'group_preds', 'stereotype_preds']:
+#     #     all_groups_or_minorities.update(*[v for v in data[cols] if v is not None and v != ''])
+
+#     # emeddings = dict(zip(all_groups_or_minorities, similarity.generate_embeddings(all_groups_or_minorities)))
+
+#     params = {
+#         'rouge': rouge,
+#         'emeddings': None
+#     }
+
+#     data = data.map(
+#         evaluate_generation,
+#         load_from_cache_file=False,
+#         fn_kwargs=params,
+#         batched=False
+#     )
+
+#     return data
+
+
+def compute_generation_metrics(prediction, labels):
+    metrics = {"rouge": rouge, "bleu": bleu}
+    if labels is not None and prediction != "":
+        labels = np.atleast_1d(labels)
+        results = {
+            metric_name: compute_metric(prediction, labels, metric=metric)
+            for metric_name, metric in metrics.items()
+        }
     else:
-        group_scores['rouge'] = None
-        group_scores['bleu'] = None
-        # stereotype_score['similarity'] = None
-        # group_scores['wmd'] = None
+        results = {metric_name: None for metric_name in metrics.keys()}
+    return results
 
-    if data['stereotype'] != None and data['stereotype_preds'] != '':
-        stereotype_score['rouge'] = [rouge.get_scores(data['stereotype_preds'], lbl)[0]['rouge-l']['f'] for lbl in data['stereotype'] if lbl is not None]
-        stereotype_score['bleu'] = [
-            corpus_bleu([[lbl]],
-                        [data['stereotype_preds']],
-                        weights=(0.5, 0.5),
-                        smoothing_function=SmoothingFunction().method1
-            ) for lbl in data['stereotype'] if lbl is not None 
-        ]
-        # stereotype_score['similarity'] = [
-        #     cosine_similarity(emeddings[data['stereotype_preds']], emeddings[lbl])
-        #     for lbl in data['stereotype'] if lbl is not None 
-        # ]
-        # stereotype_score['wmd'] = [
-        #     word_vectors.wmdistance(
-        #         [token for token in data['stereotype_preds'].lower().split() if token not in stop_words],
-        #         [token for token in lbl.lower().split() if token not in stop_words]
-        #     ) for lbl in data['stereotype'] if lbl is not None 
-        # ]
-    else:
-        stereotype_score['rouge'] = None
-        stereotype_score['bleu'] = None
-        # stereotype_score['similarity'] = None
-        # stereotype_score['wmd'] = None
 
-    return {
-        'group_scores': group_scores,
-        'stereotype_scores': stereotype_score
-    }
+def evaluate_generation(example, config):
+    group_scores = compute_generation_metrics(example["group_preds"], example["group"])
+    stereotype_score = compute_generation_metrics(
+        example["stereotype_preds"], example["stereotype"]
+    )
+
+    return {"group_scores": group_scores, "stereotype_scores": stereotype_score}
 
 
 def aggregate_generation_results(group_scores, stereotype_scores):
-    group_rouge_scores = [max(scores['rouge']) for scores in group_scores if scores['rouge'] != None]
-    group_bleu_score = [max(scores['bleu']) for scores in group_scores if scores['bleu'] != None]
+    group_rouge_scores = [
+        max(scores["rouge"]) for scores in group_scores if scores["rouge"] is not None
+    ]
+    group_bleu_score = [
+        max(scores["bleu"]) for scores in group_scores if scores["bleu"] is not None
+    ]
     # group_sim_score = [max(scores['similarity']) for scores in group_scores if scores['similarity'] != None]
     # group_wmd_score = [min(scores['wmd']) for scores in group_scores if scores['bleu'] != None]
 
-    stereotype_rouge_score = [max(scores['rouge']) for scores in stereotype_scores if scores['rouge'] != None]
-    stereotype_bleu_score = [max(scores['bleu']) for scores in stereotype_scores if scores['bleu'] != None]
+    stereotype_rouge_score = [
+        max(scores["rouge"])
+        for scores in stereotype_scores
+        if scores["rouge"] is not None
+    ]
+    stereotype_bleu_score = [
+        max(scores["bleu"])
+        for scores in stereotype_scores
+        if scores["bleu"] is not None
+    ]
     # stereotype__sim_score = [max(scores['similarity']) for scores in stereotype_scores if scores['similarity'] != None]
     # stereotype_wmd_score = [min(scores['wmd']) for scores in stereotype_scores if scores['bleu'] != None]
 
     return {
-        'group_rouge': np.mean(group_rouge_scores),
-        'group_bleu': np.mean(group_bleu_score),
-        'stereotype_rouge': np.mean(stereotype_rouge_score),
-        'stereotype_bleu': np.mean(stereotype_bleu_score),
+        "group_rouge": np.mean(group_rouge_scores),
+        "group_bleu": np.mean(group_bleu_score),
+        "stereotype_rouge": np.mean(stereotype_rouge_score),
+        "stereotype_bleu": np.mean(stereotype_bleu_score),
     }
 
 
-def print_classification_results(
-    labels, predictions, results, show_cm=True
-):
+def print_classification_results(labels, predictions, results, show_cm=True):
     annotation_type = [
         "Offensive",
         "Intentional",
@@ -149,5 +209,5 @@ def print_classification_results(
 
 def print_generations_results(results):
     for score_name, score in results.items():
-        s_class, s_type = score_name.split('_')
+        s_class, s_type = score_name.split("_")
         print(f"{s_class.title()} {s_type.title()} score:{score:.3f}")

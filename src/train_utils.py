@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 import wandb
 
+from .logging import WandbLogger
 from .utils import create_dirs_for_file
 
 
@@ -62,6 +63,7 @@ def train(
     config,
     monitor=True,
 ):
+    wandb_logger = WandbLogger()
     watch_list = [model]
 
     accumulation_steps = config.model.get("accumulation_steps", 1)
@@ -88,7 +90,7 @@ def train(
     # Run training and track with wandb
     steps_per_epoch = len(train_dataloader)
     total_steps = steps_per_epoch * config.model["num_epochs"]
-    step = 0
+    step = 1
     model.train()
 
     forward_signature = set(inspect.signature(model.forward).parameters)
@@ -102,7 +104,7 @@ def train(
                 inputs = {
                     argument: value
                     for argument, value in data.items()
-                    if argument in forward_signature and argument != "labels"
+                    if argument in forward_signature
                 }
 
                 with accelerator.accumulate(model):
@@ -117,11 +119,8 @@ def train(
                         config=config,
                     )
 
-                step += 1
-                pbar.update(1)
-
                 if monitor:
-                    wandb.log({"train_loss": loss, "lr": lr}, step=step)
+                    wandb_logger.log_step(train_loss=loss, lr=lr)
 
                 # Evaluate the model and save checkpoints
                 if (step % config.model["log_interval"] == 0) or (step == total_steps):
@@ -133,18 +132,17 @@ def train(
                     model.train()
 
                     if monitor:
-                        wandb.log(
-                            {
-                                "val_loss": avg_val_loss,
-                            },
-                            step=step,
-                        )
+                        wandb_logger.log_step(val_loss=avg_val_loss)
 
                     save_model_checkpoint(
                         accelerator.unwrap_model(model),
                         step,
                         config,
                     )
+
+                step += 1
+                pbar.update(1)
+                wandb_logger.update_step(1)
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -189,7 +187,7 @@ def _train_evaluation(model, dataloader, loss_fn, step):
                 inputs_kwargs = {
                     argument: value
                     for argument, value in data.items()
-                    if argument in forward_signature and argument != "labels"
+                    if argument in forward_signature
                 }
 
                 outputs = model(**inputs_kwargs, return_dict=True)

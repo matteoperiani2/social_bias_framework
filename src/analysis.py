@@ -12,11 +12,13 @@ from .plot import plot_bar_with_bar_labels
 
 
 def plot_cls_distribution(
-    df: pd.DataFrame, cls_cols, n_cols=2, figsize=(20, 15), type="hist"
+    df: pd.DataFrame, cls_cols, n_cols=2, figsize=(20, 15), type="hist", title=None
 ):
     n_rows = math.ceil(len(cls_cols) / n_cols)
 
     plt.figure(figsize=figsize)
+    if title is not None:
+        plt.title(title)
     for i, col in enumerate(cls_cols):
         ax = plt.subplot(n_rows, n_cols, i + 1)
         plot_distribution(df, x=col, hue="split", ax=ax, type=type)
@@ -54,7 +56,7 @@ def plot_distribution(
             df = df.groupby(hue)
 
         distribution = df[x].value_counts(normalize=True)
-        distribution = distribution.apply(lambda x: np.round(x, decimals=3) * 100)
+        distribution = distribution.apply(lambda x: np.round(x, decimals=3) * 100.0)
         distribution = distribution.rename("frequency").reset_index()
         plot_bar_with_bar_labels(distribution, x=x, y="frequency", hue=hue, ax=ax)
 

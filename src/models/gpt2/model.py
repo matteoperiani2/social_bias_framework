@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
-from torch.nn.modules import Embedding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 from ...utils import filter_model_inputs, pad_batch
@@ -154,31 +153,36 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
             for layer_past in past_key_values
         )
 
-class GPT2Loss(nn.Module):
 
-    def __init__(self, tokenizer, config, init_weight) -> None:
+class GPT2Loss(nn.Module):
+    def __init__(self, tokenizer, config) -> None:
         super(GPT2Loss, self).__init__()
         self.weight = torch.ones(len(tokenizer))
-        if init_weight:
-            special_tokens_dict = {token:token_id for token,token_id in zip(tokenizer.all_special_tokens, tokenizer.all_special_ids)}
-            for cls_name,freq in config['model']['classification_pos_freq'].items():
-                pos_id = special_tokens_dict[f'<|{cls_name}Y|>']
-                neg_id =  special_tokens_dict[f'<|{cls_name}N|>']
-                self.weight[pos_id] = 1/freq
-                self.weight[neg_id] = 1/(1-freq)
-
-        print(self.weight[50256:])
+        if config["model"].get("weight_loss", False):
+            special_tokens_dict = dict(
+                zip(
+                    tokenizer.all_special_tokens, tokenizer.all_special_ids, strict=True
+                )
+            )
+            for cls_name, freq in config["model"]["classification_pos_freq"].items():
+                pos_id = special_tokens_dict[f"<|{cls_name}Y|>"]
+                neg_id = special_tokens_dict[f"<|{cls_name}N|>"]
+                self.weight[pos_id] = 1 / freq
+                self.weight[neg_id] = 1 / (1 - freq)
 
     def forward(self, outputs, data):
         logits = outputs.logits.transpose(-1, -2)
         labels = data["labels"]
-        loss = F.cross_entropy(logits, labels, reduction="none", weight=self.weight.to(logits.device))  # (BATCH, SEQ_LEN)
+        loss = F.cross_entropy(
+            logits, labels, reduction="none", weight=self.weight.to(logits.device)
+        )  # (BATCH, SEQ_LEN)
 
         n_valid_tokens = torch.sum(labels != -100, dim=-1)  # (BATCH, )
-        loss = torch.sum(loss, dim=-1) / torch.clamp(n_valid_tokens, min=1e-7)  # (BATCH, )
+        loss = torch.sum(loss, dim=-1) / torch.clamp(
+            n_valid_tokens, min=1e-7
+        )  # (BATCH, )
         loss = torch.mean(loss)  # (1,)
         return loss
-
 
 
 def generate_predictions(data, model, tokenizer, collator, config):
@@ -186,16 +190,28 @@ def generate_predictions(data, model, tokenizer, collator, config):
     model.eval()
     model.to(device)
 
-    special_tokens_dict = {token:token_id for token,token_id in zip(tokenizer.additional_special_tokens, tokenizer.additional_special_tokens_ids)}
+    special_tokens_dict = dict(
+        zip(
+            tokenizer.additional_special_tokens,
+            tokenizer.additional_special_tokens_ids,
+            strict=True,
+        )
+    )
     cls_position_tokens = [
-        ["<|offY|>","<|offN|>"],
-        ["<|intY|>","<|intN|>"],
-        ["<|sexY|>","<|sexN|>"],
-        ["<|grpY|>","<|grpN|>"],
-        ["<|ingrpY|>","<|ingrpN|>"]
+        ["<|offY|>", "<|offN|>"],
+        ["<|intY|>", "<|intN|>"],
+        ["<|sexY|>", "<|sexN|>"],
+        ["<|grpY|>", "<|grpN|>"],
+        ["<|ingrpY|>", "<|ingrpN|>"],
     ]
-    cls_tokens = [special_tokens_dict[token] for pos_tokens in cls_position_tokens for token in pos_tokens]
-    cls_tokens = [[cls_tokens[i], cls_tokens[i+1]] for i in range(len(cls_tokens))[::2]]
+    cls_tokens = [
+        special_tokens_dict[token]
+        for pos_tokens in cls_position_tokens
+        for token in pos_tokens
+    ]
+    cls_tokens = [
+        [cls_tokens[i], cls_tokens[i + 1]] for i in range(len(cls_tokens))[::2]
+    ]
 
     params = {
         "model": model,
@@ -212,7 +228,7 @@ def generate_predictions(data, model, tokenizer, collator, config):
             _generate_batch_predicitons,
             fn_kwargs=params,
             batched=True,
-            batch_size= config.model["generate_batch_size"],
+            batch_size=config.model["generate_batch_size"],
             remove_columns=["input_ids", "attention_mask"],
             load_from_cache_file=False,
         )
@@ -220,8 +236,8 @@ def generate_predictions(data, model, tokenizer, collator, config):
     predictions = predictions.map(
         _aggregate_labels,
         load_from_cache_file=False,
-        fn_kwargs={'cols': config.classification_columns},
-        remove_columns=config.classification_columns
+        fn_kwargs={"cols": config.classification_columns},
+        remove_columns=config.classification_columns,
     )
 
     model.cpu()
@@ -319,5 +335,7 @@ def _process_predictions(tokenizer, predictions, positive_cls_tokens):
 
 
 def _aggregate_labels(data, cols):
-    values = [int(v>=0.5) if v is not None else -1 for k,v in data.items() if k in cols]
-    return {'labels': values}
+    values = [
+        int(v >= 0.5) if v is not None else -1 for k, v in data.items() if k in cols
+    ]
+    return {"labels": values}
