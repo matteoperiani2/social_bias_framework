@@ -2,12 +2,12 @@ name: bart
 checkpoint_name: facebook/bart-base
 batch_size: 4
 val_batch_size: 16
+generate_batch_size: 32
 learning_rate: 1e-5
 padding_side: right
-warmup_fraction: 0.2
+warmup_fraction: 0.1
 checkpoint_dir: checkpoints/bart
-
-cls_weight: 1.0
+cls_loss: kldiv
 
 classification_pos_freq:
   - 0.485 # offensive
@@ -16,6 +16,8 @@ classification_pos_freq:
   - 0.656 # vs_group
   - 0.023 # in_group
 
-generation_parameters:
-  penalty_alpha: 0.4
-  top_k: 4
+generation_params:
+  num_beams: 1
+  early_stopping: False
+  do_sample: False  
+  max_new_tokens: 100

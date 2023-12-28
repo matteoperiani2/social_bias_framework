@@ -18,7 +18,6 @@ if __name__ == "__main__":
     config = Config.to_dict(config)
     config["seed"] = 42
     # config["model"]["cpu"] = True
-    config["model"]["log_interval"] = 15
 
     with WandbLogger().init_wandb(**config["wandb"], config=config):
         config = wandb.config
@@ -32,8 +31,8 @@ if __name__ == "__main__":
         model = train_helper.make_model(tokenizer)
 
         # Make the data
-        train_dataset = train_helper.get_data("train").select(range(3))
-        val_dataset = train_helper.get_data("val").select(range(100))
+        train_dataset = train_helper.get_data("train")
+        val_dataset = train_helper.get_data("val")
 
         collator = train_helper.make_data_collator(tokenizer, model)
 

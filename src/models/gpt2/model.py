@@ -9,7 +9,6 @@ import transformers
 from torch.nn.modules import Embedding
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
-from ...logging import WandbLogger
 from ...utils import filter_model_inputs, pad_batch
 from .logit_processor import GPT2RestrictTokensLogitsProcessor
 
@@ -161,9 +160,6 @@ class GPT2SBF(transformers.GPT2PreTrainedModel):
             )
             for layer_past in past_key_values
         )
-
-
-wandb_logger = WandbLogger()
 
 
 def loss(outputs, data):

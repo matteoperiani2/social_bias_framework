@@ -1,10 +1,11 @@
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
-from attr import dataclass
+from transformers.modeling_outputs import ModelOutput
 from transformers.models.bart.modeling_bart import (
     BartClassificationHead,
     shift_tokens_right,
@@ -15,14 +16,14 @@ from ...losses import binary_kl_div_with_logits
 
 
 @dataclass
-class BartSBFOutput:
+class BartSBFOutput(ModelOutput):
     """
     Base class for outputs of BartSBF model.
 
     Args:
         cls_logits (`torch.FloatTensor` of shape `(batch_size, config.num_labels)`):
             Classification scores of the post (before SoftMax).
-        lm_logits (torch.FloatTensor of shape (batch_size, sequence_length, config.vocab_size)):
+        logits (torch.FloatTensor of shape (batch_size, sequence_length, config.vocab_size)):
             Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
         past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
             Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
@@ -64,7 +65,7 @@ class BartSBFOutput:
     """
 
     cls_logits: torch.FloatTensor = None
-    lm_logits: torch.FloatTensor = None
+    logits: torch.FloatTensor = None
     past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     decoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
@@ -89,8 +90,9 @@ class BartSBF(transformers.BartPreTrainedModel):
         self.lm_head = nn.Linear(
             config.d_model, self.model.shared.num_embeddings, bias=False
         )
-        self.register_buffer(
-            "lm_logits_bias", torch.zeros((1, self.model.shared.num_embeddings))
+        self.register_parameter(
+            "lm_logits_bias",
+            nn.Parameter(torch.zeros((1, self.model.shared.num_embeddings))),
         )
         self.classification_head = BartClassificationHead(
             config.d_model,
@@ -179,7 +181,7 @@ class BartSBF(transformers.BartPreTrainedModel):
 
         output = BartSBFOutput(
             cls_logits=cls_logits,
-            lm_logits=lm_logits,
+            logits=lm_logits,
             past_key_values=outputs.past_key_values,
             decoder_hidden_states=outputs.decoder_hidden_states,
             decoder_attentions=outputs.decoder_attentions,
@@ -250,38 +252,74 @@ class BartSBF(transformers.BartPreTrainedModel):
 
 
 def loss(config):
-    freq = config["model"]["classification_pos_freq"]
-    weigth = 1.0 / torch.tensor(freq).float()
     wandb_logger = WandbLogger()
+    cls_weight = config["model"].get("cls_weight", 1.0)
+    gen_weight = config["model"].get("gen_weight", 1.0)
 
-    def loss(outputs, data):
-        log_sigmoid = F.logsigmoid(outputs.cls_logits)
+    freq = config["model"]["classification_pos_freq"]
+    freq = torch.tensor(freq).float()
+    freq = torch.stack((1 - freq, freq), dim=0)  # 2 x cls_features
+    cls_weights = 1 / freq
+
+    def __kldiv(outputs, data):
+        cls_weights = None
+        cls_logits = outputs.cls_logits  # batch_size x cls_features
         cls_loss = binary_kl_div_with_logits(
-            log_sigmoid, data["cls_labels"], weight=weigth
+            cls_logits, data["cls_labels"], weight=cls_weights, reduction="batchmean"
         )
+        return cls_loss
 
-        lm_logits = outputs.lm_logits.transpose(
-            -1, -2
-        )  # batch_size x vocab_size x seq_length
+    def __bce(outputs, data):
+        cls_logits = outputs.cls_logits  # batch_size x cls_features
+        labels = data["cls_labels"]
+
+        is_cls_valid = labels != -100
+
+        # binarize
+        labels = (labels > 0.5).float()  # batch_size x cls_features
+
+        weight = torch.gather(
+            cls_weights.to(cls_logits.device), dim=0, index=labels.long()
+        )
+        weight[~is_cls_valid] = 0.0
+        n_batches = torch.any(is_cls_valid, dim=-1).sum()
+
+        loss = F.binary_cross_entropy_with_logits(
+            cls_logits, labels, weight=weight, reduction="none"
+        )  # batch_size x cls_features
+        loss = loss.sum() / n_batches
+        return loss
+
+    def __gen_loss(outputs, data):
+        logits = outputs.logits  # batch_size x seq_length x vocab_size
+        logits = logits.transpose(-1, -2)  # batch_size x vocab_size x seq_length
         labels = data["labels"]
         mask = labels != -100
         n_valid_tokens = torch.sum(mask, dim=-1)  # batch_size
         n_valid_batches = torch.any(mask, dim=-1).sum()  # (1, )
+
         gen_loss = F.cross_entropy(
-            lm_logits, labels, reduction="none"
+            logits, labels, reduction="none"
         )  # batch_size x seq_length
         gen_loss = torch.sum(gen_loss, dim=-1) / torch.clamp(
             n_valid_tokens, min=1e-6
         )  # batch_size
         gen_loss = torch.sum(gen_loss) / torch.clamp(n_valid_batches, min=1e-6)  # (1,)
 
-        cls_weight = config.get("cls_weight", 1.0)
-        gen_weight = config.get("gen_weight", 1.0)
+        return gen_loss
+
+    cls_loss_name = config["model"].get("cls_loss", "kldiv")
+    cls_loss_fn = __bce if cls_loss_name == "bce" else __kldiv
+
+    def loss(outputs, data):
+        cls_loss = cls_loss_fn(outputs, data)
+        gen_loss = __gen_loss(outputs, data)
         loss = cls_weight * cls_loss + gen_weight * gen_loss
+
         wandb_logger.log_step(
             classification_loss=cls_loss.item(),
             generative_loss=gen_loss.item(),
-            clas_weight=cls_weight,
+            cls_weight=cls_weight,
             gen_weight=gen_weight,
         )
         return loss

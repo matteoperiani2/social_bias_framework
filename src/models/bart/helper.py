@@ -30,6 +30,8 @@ class BartHelper(ModelHelper):
 
         model.config.sep_token_id = tokenizer.sep_token_id
         model.config.decoder_start_token_id = tokenizer.bos_token_id
+
+        del model.config.forced_bos_token_id
         return model
 
     def __init_mlp_bias(self, model):
