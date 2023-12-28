@@ -501,6 +501,9 @@ def aggregate_data(config, verbose=True):
 
     print_if_verbose("Saving data to", config.data.aggregated, "...", verbose=verbose)
     dataset = from_pandas(df)
+
+    dataset = dataset.map(set_features_to_null_wrt_rules, num_proc=4)
+
     dataset.save_to_disk(config.data.aggregated)
     print_if_verbose("Complete!", verbose=verbose)
 

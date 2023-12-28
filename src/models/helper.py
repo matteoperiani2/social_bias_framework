@@ -75,5 +75,5 @@ class ModelHelper(ABC):
 
         return DummyLRScheduler(optimizer=optimizer)
 
-    def make_loss(self):
+    def make_loss(self, tokenizer):
         raise NotImplementedError()

@@ -160,6 +160,7 @@ wandb/
 data/
 !data/prediction/
 checkpoints/
+kaggle_lib/
 
 debug.py
 generate_train_pickle.py

@@ -8,13 +8,13 @@ data:
   processed: data/processed
   aggregated: data/aggregated
 
-  prediction: prediction
 
 wandb:
   project: social_bias_framework
   entity: group_nlp2022
 
 embedding_model: WhereIsAI/UAE-Large-V1
+wmd_model: wmd/word2vec-google-news-300.gz
 group_lbl_processor: group-label-processor.pkl
 
 model:

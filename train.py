@@ -17,7 +17,6 @@ if __name__ == "__main__":
     config = Config.load_config(model_name=model_name)
     config = Config.to_dict(config)
     config["seed"] = 42
-    # config["model"]["cpu"] = True
 
     with WandbLogger().init_wandb(**config["wandb"], config=config):
         config = wandb.config
@@ -48,8 +47,7 @@ if __name__ == "__main__":
         scheduler = train_helper.make_scheduler(
             optimizer, steps_per_epoch=len(train_dataloader)
         )
-
-        loss_fn = train_helper.make_loss()
+        loss_fn = train_helper.make_loss(tokenizer)
 
         train(
             model,
