@@ -48,12 +48,18 @@ class GPT2TokenizationHelper(TokenizationHelper):
 
             label_str = cls_str + generative_features + in_group_token
 
+        max_length = (
+            self.tokenizer.model_max_length
+            if task == "train"
+            else self.tokenizer.model_max_length
+            - self.config["model"]["generation_params"]["max_new_tokens"]
+        )
         input_ids = self.tokenizer(
             text=input_str,
             text_pair=label_str if task == "train" else None,
             padding=False,
             truncation="only_first",
-            max_length=self.tokenizer.model_max_length,
+            max_length=max_length,
             return_attention_mask=False,
         )["input_ids"]
         if task == "train":

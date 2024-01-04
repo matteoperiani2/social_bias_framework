@@ -18,13 +18,13 @@ class GPT2Helper(ModelHelper):
             path = os.path.join(self.config["data"]["train"], split)
         else:
             path = os.path.join(self.config["data"]["eval"], split)
-        self.data = datasets.load_from_disk(path)
+        data = datasets.load_from_disk(path)
 
-        return self.data
+        return data
 
     def make_data_collator(self, tokenizer, model):
-        self.collator = GPT2DataCollator(tokenizer=tokenizer, model=model)
-        return self.collator
+        collator = GPT2DataCollator(tokenizer=tokenizer, model=model)
+        return collator
 
     def make_tokenizer(self, verbose=False):
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -44,7 +44,7 @@ class GPT2Helper(ModelHelper):
         model = GPT2SBF.from_pretrained(self.config["model"]["checkpoint_name"])
         # init new embedding
         new_tokens = len(tokenizer) - model.config.vocab_size
-        self.model.resize_token_embeddings(len(tokenizer))
+        model.resize_token_embeddings(len(tokenizer))
         self.__init_new_tokens_embeddings(model, new_tokens)
         # self.__init_lm_bias(model, tokenizer)
 
@@ -67,24 +67,24 @@ class GPT2Helper(ModelHelper):
             mu, covariance_matrix=1e-5 * sigma
         )
         pad_embedding = torch.zeros_like(mu).unsqueeze(0)  # (1, 768)
-        other_embes = torch.stack(
+        other_embeds = torch.stack(
             tuple(dist.sample() for _ in range(new_tokens - 1)), dim=0
         )  # (11,768)
-        new_embeddings = torch.cat((pad_embedding, other_embes), dim=0)  # (12, 768)
+        new_embeddings = torch.cat((pad_embedding, other_embeds), dim=0)  # (12, 768)
         embeddings[-new_tokens:, :] = new_embeddings
         params["transformer.wte.weight"][-new_tokens:, :] = new_embeddings
         model.load_state_dict(params)
 
-    def __init_lm_bias(self, model, tokenizer):
-        params = model.state_dict()
-        lm_bias = params["lm_logits_bias"]
-        lm_bias[..., tokenizer.pad_token_id] = torch.finfo(torch.float16).min
-        for cls_class, freq in self.config["model"]["classification_pos_freq"].items():
-            idx = tokenizer.encode(f"<|{cls_class}|>")[0]
-            lm_bias[..., idx] = torch.log(torch.tensor(freq))
-            lm_bias[..., idx + 1] = torch.log(torch.tensor(1 - freq))
-        params["lm_logits_bias"][..., :] = lm_bias
-        model.load_state_dict(params)
+    # def __init_lm_bias(self, model, tokenizer):
+    #     params = model.state_dict()
+    #     lm_bias = params["lm_logits_bias"]
+    #     lm_bias[..., tokenizer.pad_token_id] = torch.finfo(torch.float16).min
+    #     for cls_class, freq in self.config["model"]["classification_pos_freq"].items():
+    #         idx = tokenizer.encode(f"<|{cls_class}|>")[0]
+    #         lm_bias[..., idx] = torch.log(torch.tensor(freq))
+    #         lm_bias[..., idx + 1] = torch.log(torch.tensor(1 - freq))
+    #     params["lm_logits_bias"][..., :] = lm_bias
+    #     model.load_state_dict(params)
 
     def make_loss(self, tokenizer):
         return GPT2Loss(tokenizer, self.config)

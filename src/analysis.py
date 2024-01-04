@@ -111,3 +111,44 @@ def print_mapping(
         print("to:\t", after)
         if separator is not None:
             print(separator)
+
+
+def plot_length(
+    dataset: pd.DataFrame,
+    column: str,
+    column_name: Optional[str] = None,
+    split_fn=str.split,
+    notes: Optional[str] = None,
+    max_length=None,
+):
+    if column_name is None:
+        column_name = column
+
+    length_col = column_name + "_length"
+    length = dataset[column].apply(split_fn).apply(len)
+    dp = dataset[["split"]].copy()
+    dp[length_col] = length
+
+    if notes is not None:
+        print(notes)
+    print(dp.groupby("split").describe())
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+    boxplot = sns.boxplot(data=dp, x=length_col, y="split", showmeans=True, ax=axes[0])
+    histplot = sns.histplot(
+        dp,
+        x=length_col,
+        hue="split",
+        stat="density",
+        common_norm=False,
+        discrete=True,
+        ax=axes[1],
+    )
+    if max_length is not None:
+        boxplot.axvline(x=max_length, color="red", ls="--")
+        histplot.axvline(x=max_length, color="red", ls="--")
+    title = f"{column_name.capitalize()} length"
+    if notes is not None:
+        title += f" ({notes})"
+    fig.suptitle(title, fontsize=16)
+    plt.show()

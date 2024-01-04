@@ -1,5 +1,6 @@
 from typing import Union
 
+import os
 import datasets
 import numpy as np
 import torch
@@ -16,7 +17,10 @@ class BartInference:
         self.tokenizer = helper.make_tokenizer()
 
         self.model = helper.make_model(self.tokenizer)
-        checkpoint = torch.load(checkpoint_name)
+        checkpoint_path = os.path.join(
+            config.model.checkpoint_dir, checkpoint_name + ".pt"
+        )
+        checkpoint = torch.load(checkpoint_path)
         self.model.load_state_dict(checkpoint)
         self.data_collator = helper.make_data_collator(self.tokenizer, self.model)
 
@@ -26,7 +30,7 @@ class BartInference:
         cls_threshold=0.5,
         verbose=True,
     ):
-        self.__prepare_model()
+        self.prepare_model()
 
         print_if_verbose("Predicting classification features ...", verbose=verbose)
         dataset = dataset.map(
@@ -44,10 +48,19 @@ class BartInference:
         )
 
         print_if_verbose("Generating groups and stereotypes ...", verbose=verbose)
+        if isinstance(dataset, datasets.DatasetDict):
+            first_split = next(iter(dataset.values()))
+            features = first_split.features
+        else:
+            features = dataset.features
+        features["pred_tokens"] = datasets.features.Sequence(
+            feature=datasets.features.Value(dtype="int64")
+        )
         dataset = dataset.map(
             self.predict_gen_features,
             batched=True,
             batch_size=self.config.model.generate_batch_size,
+            features=features,
         )
 
         print_if_verbose("Decoding generated tokens ...", verbose=verbose)
@@ -56,7 +69,7 @@ class BartInference:
         return dataset
 
     def predict(self, batch, cls_threshold=0.5):
-        self.__prepare_model()
+        self.prepare_model()
         batch.update(self.predict_cls_features(batch))
         batch.update(self.binarize_cls_preds(batch, threshold=cls_threshold))
         batch.update(self.predict_gen_features(batch))
@@ -64,7 +77,7 @@ class BartInference:
 
         return batch
 
-    def __prepare_model(self):
+    def prepare_model(self):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = self.model.to(device)
         self.model.eval()

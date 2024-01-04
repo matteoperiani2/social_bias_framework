@@ -2,6 +2,7 @@ import inspect
 import itertools
 import os
 from typing import Iterable, List
+from IPython.display import display, HTML
 
 import datasets
 import pandas as pd
@@ -109,3 +110,31 @@ def filter_model_inputs(model, inputs):
         if argument in forward_signature
     }
     return inputs
+
+
+def print_table(header, dataset):
+    """
+    Print and render an HTML table with the specified header and a list of tuples.
+
+    Parameters:
+    - header (list): A list of column names.
+    - dataset (list): A list of tuples where each tuple represents a row in the table.
+    """
+
+    # Generate the HTML table
+    html_code = "<table>"
+    html_code += f"    <tr>{''.join(f'<th>{col}</th>' for col in header)}</tr>"
+
+    for row in dataset:
+        html_code += "    <tr>"
+        for content in row:
+            lines = str(content).split("\n")
+            for i, line in enumerate(lines):
+                tag = "<td>" if i == 0 else "<td class='multiline'>"
+                html_code += f"        {tag}{line}</td>"
+        html_code += "    </tr>"
+
+    html_code += "</table>"
+
+    # Render the HTML using IPython display
+    display(HTML(html_code))
