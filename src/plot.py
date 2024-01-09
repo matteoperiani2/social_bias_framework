@@ -6,6 +6,7 @@ def plot_bar_with_bar_labels(
     x=None,
     y=None,
     hue=None,
+    bar_fmt="%g",
     bar_label_rotation=0,
     bar_label_padding=3,
     bar_label_type="edge",
@@ -14,6 +15,7 @@ def plot_bar_with_bar_labels(
     ax = sns.barplot(data, x=x, y=y, hue=hue, **kwargs)
     add_bar_labels(
         ax,
+        fmt=bar_fmt,
         rotation=bar_label_rotation,
         padding=bar_label_padding,
         label_type=bar_label_type,

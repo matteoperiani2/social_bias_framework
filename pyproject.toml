@@ -21,6 +21,7 @@ nltk = "^3.8.1"
 spacy = "^3.7.2"
 gensim = "^4.3.2"
 pot = "^0.9.2"
+statsmodels = "^0.14.1"
 
 
 [tool.poetry.group.dev.dependencies]

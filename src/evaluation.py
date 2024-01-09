@@ -7,7 +7,7 @@ from gensim.models.keyedvectors import KeyedVectors
 import spacy
 
 from rouge import Rouge
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 import datasets
 import matplotlib.pyplot as plt
 from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
@@ -16,7 +16,7 @@ import os
 from sklearn.metrics import f1_score
 
 from .plot import plot_bar_with_bar_labels
-from .utils import binarize, create_dirs_for_file
+from .utils import binarize, create_dirs_for_file, print_table
 from .config import Config
 
 
@@ -107,7 +107,12 @@ class Evaluator:
     ) -> Dict[str, float]:
         f1_scores = {}
         for lbls, preds, cols in zip(labels, predictions, cls_columns, strict=True):
-            score = f1_score(lbls[lbls != -1], preds[lbls != -1], average="binary")
+            score = f1_score(
+                lbls[lbls != -1],
+                preds[lbls != -1],
+                average="binary",
+                zero_division=np.nan,
+            )
             f1_scores[cols] = score
 
         return f1_scores
@@ -288,7 +293,7 @@ def __prepare_cls_labels_for_evaluation(predictions: Dict[str, list], config):
         for cls_col in config.classification_columns
     ]
     cls_labels = np.where(pd.notnull(cls_labels), cls_labels, -1).astype(int)
-    cls_preds = np.asarray(predictions["cls_preds"]).T
+    cls_preds = np.stack(np.asarray(predictions["cls_preds"])).T
     return cls_labels, cls_preds
 
 
@@ -296,6 +301,7 @@ def evaluate_classification(
     evaluator: Evaluator, predictions: Dict[str, list], config: Config
 ):
     cls_labels, cls_preds = __prepare_cls_labels_for_evaluation(predictions, config)
+    assert cls_labels.shape == cls_preds.shape
 
     results = evaluator.evaluate_classification(
         cls_labels, cls_preds, config.classification_columns
@@ -314,23 +320,23 @@ def load_per_seed_predictions(
     return predictions
 
 
+__annotation_type = [
+    "Offensive",
+    "Intentional",
+    "Sex/Lewd content",
+    "Group targetted",
+    "Speaker in group",
+]
+
+
 def show_classification_results(
     predictions: Dict[str, list], results, config, show_cm=True
 ):
-    annotation_type = [
-        "Offensive",
-        "Intentional",
-        "Sex/Lewd content",
-        "Group targetted",
-        "Speaker in group",
-    ]
-
-    for type, score in zip(annotation_type, results.values(), strict=True):
+    for type, score in zip(__annotation_type, results.values(), strict=True):
         print(f"{type}: {score:.3f}")
 
     if show_cm:
-        cls_labels, cls_preds = __prepare_cls_labels_for_evaluation(predictions, config)
-        plot_classification_cm(cls_labels, cls_preds, annotation_type)
+        plot_classification_cm(predictions, config)
 
 
 def print_generation_results(results):
@@ -380,12 +386,13 @@ def plot_evaluation_results(results, name):
     plt.plot()
 
 
-def plot_classification_cm(labels, predictions, annotation_type):
-    _, axs = plt.subplots(1, 5, figsize=(35, 15))
+def plot_classification_cm(predictions, config, normalize="all"):
+    cls_labels, cls_preds = __prepare_cls_labels_for_evaluation(predictions, config)
+    fig, axs = plt.subplots(1, 5, figsize=(20, 10))
     for j in range(5):
-        lbls = labels[j]
-        preds = predictions[j]
-        cm = confusion_matrix(lbls[lbls != -1], preds[lbls != -1], normalize="all")
+        lbls = cls_labels[j]
+        preds = cls_preds[j]
+        cm = confusion_matrix(lbls[lbls != -1], preds[lbls != -1], normalize=normalize)
         cm_disp = ConfusionMatrixDisplay(confusion_matrix=cm)
         cm_disp.plot(
             ax=axs[j],
@@ -394,9 +401,10 @@ def plot_classification_cm(labels, predictions, annotation_type):
             colorbar=False,
             xticks_rotation=90,
         )
-        axs[j].set_title(f"{annotation_type[j]}")
+        axs[j].set_title(f"{__annotation_type[j]}")
         axs[j].set(xlabel=None)
         axs[j].set(ylabel=None)
+    plt.tight_layout()
     plt.show()
 
 
@@ -459,3 +467,112 @@ def __plot_metrics_bar(data, hue: str, multiple_seeds=False):
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_comparison_bar(
+    results: Dict[str, Dict[str, float]], x_label="metric", y_label="value", hue="split"
+):
+    data = pd.DataFrame(results)
+    cols = data.columns.tolist()
+    data = (
+        data.reset_index()
+        .melt(id_vars=["index"], value_vars=cols, var_name=hue)
+        .rename(columns={"index": x_label, "value": y_label})
+    )
+
+    ax = plot_bar_with_bar_labels(
+        data,
+        x=x_label,
+        y=y_label,
+        hue=hue,
+        bar_fmt="%.4f",
+        bar_label_rotation=90,
+        bar_label_type="center",
+    )
+    ax.tick_params(axis="x", labelrotation=45)
+
+    plt.tight_layout()
+    plt.show()
+    return ax
+
+
+def get_missclassified_samples(
+    model_predictions: pd.DataFrame,
+    cls_column,
+    cls_idx,
+    model_name=None,
+) -> pd.DataFrame:
+    cls_labels = model_predictions[cls_column].apply(binarize)
+    cls_preds = model_predictions["cls_preds"].apply(lambda cls: cls[cls_idx])
+    model_predictions = model_predictions[
+        cls_labels.notnull() & (cls_labels != cls_preds)
+    ]
+    if model_name is not None:
+        model_predictions = model_predictions[model_predictions["model"] == model_name]
+    return model_predictions
+
+
+def print_missclassified_samples(
+    model_predictions,
+    cls_column,
+    config,
+    additional_columns=[],
+    filter_fn=None,
+    n_samples=10,
+):
+    cls_idx = config.classification_columns.index(cls_column)
+    for model_name in ("gpt2", "bart"):
+        samples = get_missclassified_samples(
+            model_predictions,
+            cls_column=cls_column,
+            cls_idx=cls_idx,
+            model_name=model_name,
+        )
+        if filter_fn is not None:
+            samples = samples[filter_fn(samples)]
+        n = min(n_samples, len(samples))
+        samples = samples.sample(n)
+        data = samples[["post", cls_column]].copy()
+        data["predicted " + cls_column] = samples["cls_preds"].apply(
+            lambda cls: cls[cls_idx]
+        )
+        data["model"] = samples["model"]
+        data[additional_columns] = samples[additional_columns]
+        print_table(data.columns, data.values)
+
+
+def get_best_score(scores: Dict[str, Optional[List[float]]]):
+    rouge_score = max(scores["rouge"]) if scores["rouge"] is not None else None
+    bleu_score = max(scores["bleu"]) if scores["rouge"] is not None else None
+    wmd_score = min(scores["wmd"]) if scores["wmd"] is not None else None
+    if wmd_score == float("inf"):
+        wmd_score = None
+
+    return rouge_score, bleu_score, wmd_score
+
+
+def get_best_pred(scores: Dict[str, Optional[List[float]]], metric) -> Union[int, None]:
+    scores = scores[metric]
+    if metric == "rouge" or metric == "bleu":
+        arg_fn = np.argmax
+    elif metric == "wmd":
+        arg_fn = np.argmin
+
+    return arg_fn(scores).item() if scores is not None else None
+
+
+def get_worst_n(df, metric, n=10):
+    return df.sort_values(by=metric).iloc[:n]
+
+
+def print_worst_n(df, column_name, metric="rouge", n=10):
+    worst = get_worst_n(df, metric=f"{column_name}_{metric}")
+    header = [
+        "post",
+        "predicted group",
+        "predicted implication",
+        "reference groups",
+        "reference implications",
+    ]
+    df_cols = ["post", "group_preds", "stereotype_preds", "group", "stereotype"]
+    print_table(header, worst[df_cols].values)
