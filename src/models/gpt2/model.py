@@ -1,15 +1,10 @@
-import gc
 from typing import Optional, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
-
-from ...utils import filter_model_inputs, pad_batch
-from .logit_processor import GPT2RestrictTokensLogitsProcessor
 
 
 class GPT2SBF(transformers.GPT2PreTrainedModel):
@@ -185,153 +180,66 @@ class GPT2Loss(nn.Module):
         return loss
 
 
-def generate_predictions(data, model, tokenizer, collator, config):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.eval()
-    model.to(device)
+# def generate_predictions(data, model, tokenizer, collator, config):
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model.eval()
+#     model.to(device)
 
-    special_tokens_dict = dict(
-        zip(
-            tokenizer.additional_special_tokens,
-            tokenizer.additional_special_tokens_ids,
-            strict=True,
-        )
-    )
-    cls_position_tokens = [
-        ["<|offY|>", "<|offN|>"],
-        ["<|intY|>", "<|intN|>"],
-        ["<|sexY|>", "<|sexN|>"],
-        ["<|grpY|>", "<|grpN|>"],
-        ["<|ingrpY|>", "<|ingrpN|>"],
-    ]
-    cls_tokens = [
-        special_tokens_dict[token]
-        for pos_tokens in cls_position_tokens
-        for token in pos_tokens
-    ]
-    cls_tokens = [
-        [cls_tokens[i], cls_tokens[i + 1]] for i in range(len(cls_tokens))[::2]
-    ]
+#     special_tokens_dict = dict(
+#         zip(
+#             tokenizer.additional_special_tokens,
+#             tokenizer.additional_special_tokens_ids,
+#             strict=True,
+#         )
+#     )
+#     cls_position_tokens = [
+#         ["<|offY|>", "<|offN|>"],
+#         ["<|intY|>", "<|intN|>"],
+#         ["<|sexY|>", "<|sexN|>"],
+#         ["<|grpY|>", "<|grpN|>"],
+#         ["<|ingrpY|>", "<|ingrpN|>"],
+#     ]
+#     cls_tokens = [
+#         special_tokens_dict[token]
+#         for pos_tokens in cls_position_tokens
+#         for token in pos_tokens
+#     ]
+#     cls_tokens = [
+#         [cls_tokens[i], cls_tokens[i + 1]] for i in range(len(cls_tokens))[::2]
+#     ]
 
-    params = {
-        "model": model,
-        "tokenizer": tokenizer,
-        "collator": collator,
-        "cls_tokens": cls_tokens,
-        "pos_cls_tokens": [tokens[0] for tokens in cls_tokens],
-        "gen_cfg": config.model["generation_params"],
-        "device": device,
-    }
+#     params = {
+#         "model": model,
+#         "tokenizer": tokenizer,
+#         "collator": collator,
+#         "cls_tokens": cls_tokens,
+#         "pos_cls_tokens": [tokens[0] for tokens in cls_tokens],
+#         "gen_cfg": config.model["generation_params"],
+#         "device": device,
+#     }
 
-    with torch.no_grad():
-        predictions = data.map(
-            _generate_batch_predicitons,
-            fn_kwargs=params,
-            batched=True,
-            batch_size=config.model["generate_batch_size"],
-            remove_columns=["input_ids", "attention_mask"],
-            load_from_cache_file=False,
-        )
+#     with torch.no_grad():
+#         predictions = data.map(
+#             _generate_batch_predicitons,
+#             fn_kwargs=params,
+#             batched=True,
+#             batch_size=config.model["generate_batch_size"],
+#             remove_columns=["input_ids", "attention_mask"],
+#             load_from_cache_file=False,
+#         )
 
-    predictions = predictions.map(
-        _aggregate_labels,
-        load_from_cache_file=False,
-        fn_kwargs={"cols": config.classification_columns},
-        remove_columns=config.classification_columns,
-    )
+#     predictions = predictions.map(
+#         _aggregate_labels,
+#         load_from_cache_file=False,
+#         fn_kwargs={"cols": config.classification_columns},
+#         remove_columns=config.classification_columns,
+#     )
 
-    model.cpu()
-    gc.collect()
-    torch.cuda.empty_cache()
+#     model.cpu()
+#     gc.collect()
+#     torch.cuda.empty_cache()
 
-    return predictions
-
-
-def _generate_batch_predicitons(
-    data, model, tokenizer, collator, cls_tokens, pos_cls_tokens, gen_cfg, device
-):
-    inputs = filter_model_inputs(model, data)
-    inputs = pad_batch(inputs, collator)
-
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-
-    processor = GPT2RestrictTokensLogitsProcessor(
-        step_cls_tokens=cls_tokens,
-        sep_token_id=tokenizer.sep_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        max_length=gen_cfg.max_new_tokens,
-        device=device,
-    )
-    logits_processor = transformers.LogitsProcessorList([processor])
-
-    generate_out = model.generate(
-        **inputs, logits_processor=logits_processor, **gen_cfg
-    )
-
-    generate_out = generate_out.detach().cpu().numpy()
-    cls_preds, minorities_preds, stereotypes_preds = _process_predictions(
-        tokenizer, generate_out, pos_cls_tokens
-    )
-
-    return {
-        "cls_preds": cls_preds,
-        "group_preds": minorities_preds,
-        "stereotype_preds": stereotypes_preds,
-    }
-
-
-def _process_predictions(tokenizer, predictions, positive_cls_tokens):
-    class_preds = []
-    minority_preds = []
-    stereotype_preds = []
-
-    # remove from the generated the input prompt
-    predictions = [
-        pred[np.where(pred == tokenizer.sep_token_id)[0][0] + 1 :]
-        for pred in predictions
-    ]
-
-    for pred in predictions:
-        sep_idx = np.where(pred == tokenizer.sep_token_id)[0]
-        eos_idx = np.where(pred == tokenizer.eos_token_id)[0][0]
-
-        # --- get classification tokens ---
-        # concatenate first 4 tokens with the token generated before the eos
-        cls_preds = np.concatenate((pred[:4], [pred[eos_idx - 1]]))
-        bin_cls_preds = [
-            int(pred == pos_token)
-            for pred, pos_token in zip(cls_preds, positive_cls_tokens, strict=True)
-        ]
-
-        # if the model predict not offensive or not to a group, ignore the generation
-        if bin_cls_preds[0] == 0 or bin_cls_preds[-2] == 0:
-            bin_cls_preds[-2] = 0
-            bin_cls_preds[-1] = 0
-            class_preds.append(bin_cls_preds)
-            minority_preds.append([])
-            stereotype_preds.append([])
-            continue
-
-        class_preds.append(bin_cls_preds)
-
-        # --- get minority and stereotype tokens ---
-        if len(sep_idx) > 2:  # if there are at least 3 sep
-            # select as minority tokens, those tokens that are between first 2 sep
-            minority_preds.append(pred[sep_idx[0] + 1 : sep_idx[1]])
-            stereotype_preds.append(pred[sep_idx[1] + 1 : sep_idx[2]])
-        elif len(sep_idx) > 1:  # if there are at least 2 sep
-            minority_preds.append(pred[sep_idx[0] + 1 : sep_idx[1]])
-            stereotype_preds.append(pred[sep_idx[1] + 1 : -2])
-        else:  # if there is only 1 sep
-            # minority are those tokens betwen sep and second-to-last token
-            # for stereotypes no tokens are selected
-            minority_preds.append(pred[sep_idx[0] + 1 : eos_idx - 2])
-            stereotype_preds.append([])
-
-    minority_preds = tokenizer.batch_decode(minority_preds)
-    stereotype_preds = tokenizer.batch_decode(stereotype_preds)
-
-    return class_preds, minority_preds, stereotype_preds
+#     return predictions
 
 
 def _aggregate_labels(data, cols):

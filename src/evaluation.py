@@ -1,18 +1,26 @@
+from collections import defaultdict
 import numpy as np
 import pandas as pd
+import string
 from nltk.translate.bleu_score import SmoothingFunction, corpus_bleu
-from rouge import Rouge
+from gensim.models.keyedvectors import KeyedVectors
+import spacy
 
-# import nltk
-# from nltk.tokenize import word_tokenize
-# from gensim.models import KeyedVectors
-# from nltk.corpus import stopwords
-# nltk.download('stopwords')
-# nltk.download('punkt')
+from rouge import Rouge
+from typing import Dict, List, Optional, Union
+import datasets
+import matplotlib.pyplot as plt
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+
+import os
 from sklearn.metrics import f1_score
 
-from .plot import plot_classification_cm
-from .utils import binarize
+from .plot import plot_bar_with_bar_labels
+from .utils import binarize, create_dirs_for_file, print_table
+from .config import Config
+
+
+wmd_useless_tokens = set(string.punctuation)
 
 
 def tune_threshold(y_true, y_logits, threshold_range=(0.1, 0.9), threshold_step=0.01):
@@ -45,7 +53,7 @@ def tune_threshold(y_true, y_logits, threshold_range=(0.1, 0.9), threshold_step=
             best_f1 = current_f1
             optimal_threshold = thresholds[i]
 
-    return optimal_threshold
+    return round(optimal_threshold / threshold_step) * threshold_step
 
 
 def tune_cls_thresholds(data, config, threshold_range=(0.1, 0.9), threshold_step=0.01):
@@ -83,131 +91,510 @@ def tune_cls_thresholds(data, config, threshold_range=(0.1, 0.9), threshold_step
     return optimal_thresholds
 
 
-def evaluate_classification(labels, predictions, cls_columns):
-    f1_scores = {}
-    for lbls, preds, cols in zip(labels, predictions, cls_columns, strict=True):
-        score = f1_score(lbls[lbls != -1], preds[lbls != -1], average="binary")
-        f1_scores[cols] = score
-
-    return f1_scores
-
-
-__rouge = Rouge(metrics=["rouge-l"], stats="f")
-
-
-def rouge(prediction, label):
-    return __rouge.get_scores(prediction, label)[0]["rouge-l"]["f"]
-
-
-def bleu(prediction, label):
-    return corpus_bleu(
-        [[label]],
-        [prediction],
-        weights=(0.5, 0.5),
-        smoothing_function=SmoothingFunction().method1,
-    )
-
-
-def compute_metric(prediction, labels, metric):
-    return [metric(prediction, label) for label in labels if label is not None]
-
-
-# def evaluate_generation(data, config):
-#     # stop_words = set(stopwords.words('english'))
-#     # word_vectors = KeyedVectors.load_word2vec_format(config.wmd_model, binary=True)
-#     similarity = TextSimilarity(config.embedding_model)
-
-#     # all_groups_or_minorities = set()
-#     # for cols in ['group', 'stereotype', 'group_preds', 'stereotype_preds']:
-#     #     all_groups_or_minorities.update(*[v for v in data[cols] if v is not None and v != ''])
-
-#     # emeddings = dict(zip(all_groups_or_minorities, similarity.generate_embeddings(all_groups_or_minorities)))
-
-#     params = {
-#         'rouge': rouge,
-#         'emeddings': None
-#     }
-
-#     data = data.map(
-#         evaluate_generation,
-#         load_from_cache_file=False,
-#         fn_kwargs=params,
-#         batched=False
-#     )
-
-#     return data
-
-
-def compute_generation_metrics(prediction, labels):
-    metrics = {"rouge": rouge, "bleu": bleu}
-    if labels is not None and prediction != "":
-        labels = np.atleast_1d(labels)
-        results = {
-            metric_name: compute_metric(prediction, labels, metric=metric)
-            for metric_name, metric in metrics.items()
+class Evaluator:
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.__rouge_metric = Rouge(metrics=["rouge-l"], stats="f")
+        self.__wmd_model = self.__load_wmd_model(config)
+        self.metrics = {
+            "rouge": self.__rouge,
+            "bleu": self.__bleu,
+            "wmd": self.__wmd_distance,
         }
-    else:
-        results = {metric_name: None for metric_name in metrics.keys()}
+
+    def evaluate_classification(
+        self, labels, predictions, cls_columns
+    ) -> Dict[str, float]:
+        f1_scores = {}
+        for lbls, preds, cols in zip(labels, predictions, cls_columns, strict=True):
+            score = f1_score(
+                lbls[lbls != -1],
+                preds[lbls != -1],
+                average="binary",
+                zero_division=np.nan,
+            )
+            f1_scores[cols] = score
+
+        return f1_scores
+
+    def evaluate_generation(self, example):
+        group_scores = self.__compute_generation_metrics(
+            example["group_preds"], example["group"]
+        )
+        stereotype_score = self.__compute_generation_metrics(
+            example["stereotype_preds"], example["stereotype"]
+        )
+
+        return {"group_scores": group_scores, "stereotype_scores": stereotype_score}
+
+    def __compute_generation_metrics(self, prediction, labels):
+        if labels is not None and prediction != "":
+            labels = np.atleast_1d(labels)
+            results = {
+                metric_name: self.__compute_metric(prediction, labels, metric=metric)
+                for metric_name, metric in self.metrics.items()
+            }
+        else:
+            results = {metric_name: None for metric_name in self.metrics.keys()}
+        return results
+
+    def __compute_metric(self, prediction, labels, metric):
+        return [metric(prediction, label) for label in labels if label is not None]
+
+    def aggregate_generation_results(self, group_scores, stereotype_scores):
+        group_rouge_scores = [
+            max(scores["rouge"])
+            for scores in group_scores
+            if scores["rouge"] is not None
+        ]
+        group_bleu_score = [
+            max(scores["bleu"]) for scores in group_scores if scores["bleu"] is not None
+        ]
+        group_wmd_score = [
+            min(scores["wmd"]) for scores in group_scores if scores["wmd"] is not None
+        ]
+        group_wmd_score = [score for score in group_wmd_score if score < float("inf")]
+
+        stereotype_rouge_score = [
+            max(scores["rouge"])
+            for scores in stereotype_scores
+            if scores["rouge"] is not None
+        ]
+        stereotype_bleu_score = [
+            max(scores["bleu"])
+            for scores in stereotype_scores
+            if scores["bleu"] is not None
+        ]
+        stereotype_wmd_score = [
+            min(scores["wmd"])
+            for scores in stereotype_scores
+            if scores["wmd"] is not None
+        ]
+        stereotype_wmd_score = [
+            score for score in stereotype_wmd_score if score < float("inf")
+        ]
+
+        return {
+            "group_rouge": np.mean(group_rouge_scores),
+            "group_bleu": np.mean(group_bleu_score),
+            "group_wmd": np.mean(group_wmd_score),
+            "stereotype_rouge": np.mean(stereotype_rouge_score),
+            "stereotype_bleu": np.mean(stereotype_bleu_score),
+            "stereotype_wmd": np.mean(stereotype_wmd_score),
+        }
+
+    def __rouge(self, prediction, label):
+        return self.__rouge_metric.get_scores(prediction, label)[0]["rouge-l"]["f"]
+
+    def __bleu(self, prediction, label):
+        return corpus_bleu(
+            [[label]],
+            [prediction],
+            weights=(0.5, 0.5),
+            smoothing_function=SmoothingFunction().method1,
+        )
+
+    def evaluate_per_seed_classification(
+        self,
+        predictions: Dict[
+            str, Union[Dict[str, datasets.Dataset], datasets.DatasetDict]
+        ],
+    ) -> Dict[str, Dict[str, datasets.Dataset]]:
+        results = defaultdict(dict)
+        for seed, pred_datasets in predictions.items():
+            for split, preds in pred_datasets.items():
+                res = evaluate_classification(self, preds, self.config)
+                results[seed][split] = res
+
+        return dict(results)
+
+    def evaluate_per_seed_generation(
+        self,
+        predictions: Dict[
+            str, Union[Dict[str, datasets.Dataset], datasets.DatasetDict]
+        ],
+    ):
+        results = defaultdict(dict)
+        for seed, pred_datasets in predictions.items():
+            for split, preds in pred_datasets.items():
+                preds = preds.map(self.evaluate_generation)
+                path = os.path.join(self.config.data.prediction, seed, split)
+                preds.save_to_disk(path)
+                res = self.aggregate_generation_results(
+                    preds["group_scores"], preds["stereotype_scores"]
+                )
+
+                results[seed][split] = res
+
+        return dict(results)
+
+    def aggregate_per_seed_generation_results(
+        self,
+        predictions: Dict[
+            str, Union[Dict[str, datasets.Dataset], datasets.DatasetDict]
+        ],
+    ):
+        results = defaultdict(dict)
+        for seed, pred_datasets in predictions.items():
+            for split, preds in pred_datasets.items():
+                res = self.aggregate_generation_results(
+                    preds["group_scores"], preds["stereotype_scores"]
+                )
+
+                results[seed][split] = res
+
+        return dict(results)
+
+    def __load_wmd_model(self, config: Config) -> KeyedVectors:
+        """
+        Loads a pre-trained word embedding model via gensim library.
+
+        :return
+            - pre-trained word embedding model (gensim KeyedVectors object)
+        """
+
+        spacy_model = os.path.split(config.wmd_model)[-1]
+        if not os.path.exists(config.wmd_model):
+            spacy.cli.download(spacy_model)
+            nlp = spacy.load(spacy_model)
+            wordList = []
+            vectorList = []
+            for key, vector in nlp.vocab.vectors.items():
+                wordList.append(nlp.vocab.strings[key])
+                vectorList.append(vector)
+            embedding = KeyedVectors(nlp.vocab.vectors_length)
+            embedding.add_vectors(wordList, vectorList)
+
+            create_dirs_for_file(config.wmd_model)
+            embedding.save(config.wmd_model)
+
+        self.nlp = spacy.load(spacy_model)
+        return KeyedVectors.load(config.wmd_model)
+
+    def __wmd_tokenize(self, text: str) -> List[str]:
+        # Tokenize and remove punctuation and stopwords
+        tokenized_text = self.nlp(text)
+        tokens = [
+            token.text
+            for token in tokenized_text
+            if token.text not in wmd_useless_tokens
+        ]
+        return tokens
+
+    def __wmd_distance(self, prediction, label):
+        prediction = self.__wmd_tokenize(str(prediction))
+        label = self.__wmd_tokenize(str(label))
+        return self.__wmd_model.wmdistance(prediction, label)
+
+
+def __prepare_cls_labels_for_evaluation(predictions: Dict[str, list], config):
+    cls_labels = [
+        [binarize(v) for v in predictions[cls_col]]
+        for cls_col in config.classification_columns
+    ]
+    cls_labels = np.where(pd.notnull(cls_labels), cls_labels, -1).astype(int)
+    cls_preds = np.stack(np.asarray(predictions["cls_preds"])).T
+    return cls_labels, cls_preds
+
+
+def evaluate_classification(
+    evaluator: Evaluator, predictions: Dict[str, list], config: Config
+):
+    cls_labels, cls_preds = __prepare_cls_labels_for_evaluation(predictions, config)
+    assert cls_labels.shape == cls_preds.shape
+
+    results = evaluator.evaluate_classification(
+        cls_labels, cls_preds, config.classification_columns
+    )
     return results
 
 
-def evaluate_generation(example, config):
-    group_scores = compute_generation_metrics(example["group_preds"], example["group"])
-    stereotype_score = compute_generation_metrics(
-        example["stereotype_preds"], example["stereotype"]
-    )
-
-    return {"group_scores": group_scores, "stereotype_scores": stereotype_score}
-
-
-def aggregate_generation_results(group_scores, stereotype_scores):
-    group_rouge_scores = [
-        max(scores["rouge"]) for scores in group_scores if scores["rouge"] is not None
-    ]
-    group_bleu_score = [
-        max(scores["bleu"]) for scores in group_scores if scores["bleu"] is not None
-    ]
-    # group_sim_score = [max(scores['similarity']) for scores in group_scores if scores['similarity'] != None]
-    # group_wmd_score = [min(scores['wmd']) for scores in group_scores if scores['bleu'] != None]
-
-    stereotype_rouge_score = [
-        max(scores["rouge"])
-        for scores in stereotype_scores
-        if scores["rouge"] is not None
-    ]
-    stereotype_bleu_score = [
-        max(scores["bleu"])
-        for scores in stereotype_scores
-        if scores["bleu"] is not None
-    ]
-    # stereotype__sim_score = [max(scores['similarity']) for scores in stereotype_scores if scores['similarity'] != None]
-    # stereotype_wmd_score = [min(scores['wmd']) for scores in stereotype_scores if scores['bleu'] != None]
-
-    return {
-        "group_rouge": np.mean(group_rouge_scores),
-        "group_bleu": np.mean(group_bleu_score),
-        "stereotype_rouge": np.mean(stereotype_rouge_score),
-        "stereotype_bleu": np.mean(stereotype_bleu_score),
-    }
+def load_per_seed_predictions(
+    seeds: List[int], config
+) -> Dict[str, Dict[str, datasets.Dataset]]:
+    predictions = {}
+    for seed in seeds:
+        path = os.path.join(config.data.prediction, str(seed))
+        data = datasets.load_from_disk(path)
+        predictions[str(seed)] = data
+    return predictions
 
 
-def print_classification_results(labels, predictions, results, show_cm=True):
-    annotation_type = [
-        "Offensive",
-        "Intentional",
-        "Sex/Lewd content",
-        "Group targetted",
-        "Speaker in group",
-    ]
+__annotation_type = [
+    "Offensive",
+    "Intentional",
+    "Sex/Lewd content",
+    "Group targetted",
+    "Speaker in group",
+]
 
-    for type, score in zip(annotation_type, results.values(), strict=True):
+
+def show_classification_results(
+    predictions: Dict[str, list], results, config, show_cm=True
+):
+    for type, score in zip(__annotation_type, results.values(), strict=True):
         print(f"{type}: {score:.3f}")
 
     if show_cm:
-        plot_classification_cm(labels, predictions, annotation_type)
+        plot_classification_cm(predictions, config)
 
 
-def print_generations_results(results):
+def print_generation_results(results):
     for score_name, score in results.items():
         s_class, s_type = score_name.split("_")
         print(f"{s_class.title()} {s_type.title()} score:{score:.3f}")
+
+
+def plot_classification_results(results):
+    plot_evaluation_results(results, name="Classification")
+
+
+def plot_generative_results(results):
+    plot_evaluation_results(results, name="Generative")
+
+
+def plot_evaluation_results(results, name):
+    split_dfs = defaultdict(list)
+    for seed, seed_res in results.items():
+        for split, split_res in seed_res.items():
+            for score_name, score_val in split_res.items():
+                split_dfs[split].append(
+                    {
+                        "name": score_name,
+                        "score": round(score_val, 4),
+                        "seed": seed,
+                    }
+                )
+    split_dfs = {split: pd.DataFrame(values) for split, values in split_dfs.items()}
+
+    _, axs = plt.subplots(1, 2, figsize=(15, 4))
+    for i, (split, df) in enumerate(split_dfs.items()):
+        plot_bar_with_bar_labels(
+            df,
+            x="name",
+            y="score",
+            hue="seed",
+            ax=axs[i],
+            bar_label_rotation=90,
+            bar_label_type="center",
+        )
+        axs[i].set_title(f"{name} score on {split} set")
+        axs[i].set_xlabel(None)
+        axs[i].set_ylabel("Score")
+        axs[i].tick_params(axis="x", labelrotation=45)
+    plt.tight_layout()
+    plt.plot()
+
+
+def plot_classification_cm(predictions, config, normalize="all"):
+    cls_labels, cls_preds = __prepare_cls_labels_for_evaluation(predictions, config)
+    fig, axs = plt.subplots(1, 5, figsize=(20, 10))
+    for j in range(5):
+        lbls = cls_labels[j]
+        preds = cls_preds[j]
+        cm = confusion_matrix(lbls[lbls != -1], preds[lbls != -1], normalize=normalize)
+        cm_disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+        cm_disp.plot(
+            ax=axs[j],
+            cmap="Blues",
+            values_format="0.2f",
+            colorbar=False,
+            xticks_rotation=90,
+        )
+        axs[j].set_title(f"{__annotation_type[j]}")
+        axs[j].set(xlabel=None)
+        axs[j].set(ylabel=None)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_models_metrics_bar(results: dict, split: str, multiple_seeds=False):
+    dfs = []
+    for model, res in results.items():
+        x = __prepare_data(res, splits=split, multiple_seeds=multiple_seeds)
+        x["model"] = model
+        dfs.append(x)
+    data = pd.concat(dfs)
+
+    __plot_metrics_bar(data, hue="model", multiple_seeds=multiple_seeds)
+
+
+def plot_metrics_bar(results, splits=None, multiple_seeds=False):
+    data = __prepare_data(results, splits=splits, multiple_seeds=multiple_seeds)
+    __plot_metrics_bar(data, hue="split", multiple_seeds=multiple_seeds)
+
+
+def __prepare_data(results, splits, multiple_seeds):
+    if splits is None:
+        x = next(iter(results.values())) if multiple_seeds else results
+        splits = x.keys()
+
+    def prepare_data(results, splits):
+        x = (
+            pd.DataFrame(results)
+            .map(lambda t: round(t, 4))
+            .reset_index()
+            .rename(columns={"index": "metric"})
+        )
+        return x.melt(id_vars=["metric"], value_vars=splits, var_name="split")
+
+    if multiple_seeds:
+        dfs = []
+        for seed, res in results.items():
+            x = prepare_data(res, splits)
+            x["seed"] = seed
+            dfs.append(x)
+        x = pd.concat(dfs)
+    else:
+        x = prepare_data(results, splits)
+    return x
+
+
+def __plot_metrics_bar(data, hue: str, multiple_seeds=False):
+    errorbar = ("sd", 2) if multiple_seeds else None
+    bar_label_type = "center" if multiple_seeds else "edge"
+
+    ax = plot_bar_with_bar_labels(
+        data,
+        x="metric",
+        y="value",
+        hue=hue,
+        errorbar=errorbar,
+        bar_label_rotation=90,
+        bar_label_type=bar_label_type,
+    )
+    ax.tick_params(axis="x", labelrotation=45)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_comparison_bar(
+    results: Dict[str, Dict[str, float]], x_label="metric", y_label="value", hue="split"
+):
+    data = pd.DataFrame(results)
+    cols = data.columns.tolist()
+    data = (
+        data.reset_index()
+        .melt(id_vars=["index"], value_vars=cols, var_name=hue)
+        .rename(columns={"index": x_label, "value": y_label})
+    )
+
+    ax = plot_bar_with_bar_labels(
+        data,
+        x=x_label,
+        y=y_label,
+        hue=hue,
+        bar_fmt="%.4f",
+        bar_label_rotation=90,
+        bar_label_type="center",
+    )
+    ax.tick_params(axis="x", labelrotation=45)
+
+    plt.tight_layout()
+    plt.show()
+    return ax
+
+
+def get_missclassified_samples(
+    model_predictions: pd.DataFrame,
+    cls_column,
+    cls_idx,
+    model_name=None,
+) -> pd.DataFrame:
+    cls_labels = model_predictions[cls_column].apply(binarize)
+    cls_preds = model_predictions["cls_preds"].apply(lambda cls: cls[cls_idx])
+    model_predictions = model_predictions[
+        cls_labels.notnull() & (cls_labels != cls_preds)
+    ]
+    if model_name is not None:
+        model_predictions = model_predictions[model_predictions["model"] == model_name]
+    return model_predictions
+
+
+def print_missclassified_samples(
+    model_predictions,
+    cls_column,
+    config,
+    additional_columns=[],
+    filter_fn=None,
+    n_samples=10,
+):
+    cls_idx = config.classification_columns.index(cls_column)
+    for model_name in ("gpt2", "bart"):
+        samples = get_missclassified_samples(
+            model_predictions,
+            cls_column=cls_column,
+            cls_idx=cls_idx,
+            model_name=model_name,
+        )
+        if filter_fn is not None:
+            samples = samples[filter_fn(samples)]
+        n = min(n_samples, len(samples))
+        samples = samples.sample(n)
+        data = samples[["post", cls_column]].copy()
+        data["predicted " + cls_column] = samples["cls_preds"].apply(
+            lambda cls: cls[cls_idx]
+        )
+        data["model"] = samples["model"]
+        data[additional_columns] = samples[additional_columns]
+        print_table(data.columns, data.values)
+
+
+def get_best_score(scores: Dict[str, Optional[List[float]]]):
+    rouge_score = max(scores["rouge"]) if scores["rouge"] is not None else None
+    bleu_score = max(scores["bleu"]) if scores["rouge"] is not None else None
+    wmd_score = min(scores["wmd"]) if scores["wmd"] is not None else None
+    if wmd_score == float("inf"):
+        wmd_score = None
+
+    return rouge_score, bleu_score, wmd_score
+
+
+def get_best_pred(scores: Dict[str, Optional[List[float]]], metric) -> Union[int, None]:
+    scores = scores[metric]
+    if metric == "rouge" or metric == "bleu":
+        arg_fn = np.argmax
+    elif metric == "wmd":
+        arg_fn = np.argmin
+
+    return arg_fn(scores).item() if scores is not None else None
+
+
+def get_worst_n(df, metric, n=10):
+    return df.sort_values(by=metric).iloc[:n]
+
+
+def print_worst_n(df, column_name, metric="rouge", n=10):
+    worst = get_worst_n(df, metric=f"{column_name}_{metric}")
+    header = [
+        "post",
+        "predicted group",
+        "predicted implication",
+        "reference groups",
+        "reference implications",
+    ]
+    df_cols = ["post", "group_preds", "stereotype_preds", "group", "stereotype"]
+    print_table(header, worst[df_cols].values)
+
+
+def print_conditional_probs(
+    model_predictions, model_name, hypothesis_name, evidence_name, config
+):
+    preds = model_predictions[model_predictions["model"] == model_name]
+    marginal = preds[evidence_name] >= 0.5
+    joint = marginal & (preds[hypothesis_name] >= 0.5)
+    conditional = joint.sum() / marginal.sum()
+
+    hypothesis_idx = config.classification_columns.index(hypothesis_name)
+    evidence_idx = config.classification_columns.index(evidence_name)
+    pred_marginal = preds["cls_preds"].apply(lambda cls: cls[evidence_idx]) >= 0.5
+    pred_joint = pred_marginal & (
+        preds["cls_preds"].apply(lambda cls: cls[hypothesis_idx]) >= 0.5
+    )
+    pred_conditional = pred_joint.sum() / pred_marginal.sum()
+
+    print("-" * 10, model_name, "-" * 10)
+    print(f"True P({hypothesis_name} | {evidence_name}):", conditional)
+    print(f"Pred P({hypothesis_name} | {evidence_name}):", pred_conditional)
+    print()

@@ -16,6 +16,13 @@ classification_pos_freq:
   - 0.656 # vs_group
   - 0.023 # in_group
 
+classification_thresholds:
+  - 0.56
+  - 0.43
+  - 0.49
+  - 0.59
+  - 0.39
+
 generation_params:
   num_beams: 1
   early_stopping: False

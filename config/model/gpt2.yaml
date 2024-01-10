@@ -7,7 +7,7 @@ learning_rate: 1e-5
 padding_side: left
 warmup_fraction: 0.2
 checkpoint_dir: checkpoints/gpt2
-generate_batch_size: 16
+generate_batch_size: 8
 weight_loss: True
 
 special_tokens:
@@ -46,6 +46,6 @@ classification_pos_freq:
   ingrpY: 0.023
 
 generation_params:
-  max_new_tokens: 100
+  max_new_tokens: 80
   do_sample: False
   num_beams: 1
