@@ -576,3 +576,25 @@ def print_worst_n(df, column_name, metric="rouge", n=10):
     ]
     df_cols = ["post", "group_preds", "stereotype_preds", "group", "stereotype"]
     print_table(header, worst[df_cols].values)
+
+
+def print_conditional_probs(
+    model_predictions, model_name, hypothesis_name, evidence_name, config
+):
+    preds = model_predictions[model_predictions["model"] == model_name]
+    marginal = preds[evidence_name] >= 0.5
+    joint = marginal & (preds[hypothesis_name] >= 0.5)
+    conditional = joint.sum() / marginal.sum()
+
+    hypothesis_idx = config.classification_columns.index(hypothesis_name)
+    evidence_idx = config.classification_columns.index(evidence_name)
+    pred_marginal = preds["cls_preds"].apply(lambda cls: cls[evidence_idx]) >= 0.5
+    pred_joint = pred_marginal & (
+        preds["cls_preds"].apply(lambda cls: cls[hypothesis_idx]) >= 0.5
+    )
+    pred_conditional = pred_joint.sum() / pred_marginal.sum()
+
+    print("-" * 10, model_name, "-" * 10)
+    print(f"True P({hypothesis_name} | {evidence_name}):", conditional)
+    print(f"Pred P({hypothesis_name} | {evidence_name}):", pred_conditional)
+    print()
